@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GenAI Finance App — Apple Style</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <!-- Apple style global navigation bar -->
+  <header class="apple-nav">
+    <div class="nav-content">
+      <div class="nav-brand">
+        <svg class="apple-icon" viewBox="0 0 170 170" width="18" height="18" fill="currentColor">
+          <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.8.12-9.66-1.92-14.58-6.12-3.32-2.83-7.23-7.55-11.75-14.16-6.12-8.92-11.05-18.73-14.79-29.43-3.74-10.7-5.61-21.32-5.61-31.86 0-15.15 3.8-27.42 11.4-36.81 7.6-9.39 17.2-14.16 28.8-14.31 4.58 0 9.66 1.15 15.24 3.45 5.58 2.3 9.4 3.45 11.46 3.45 1.83 0 5.8-1.2 11.91-3.6 6.11-2.4 11.2-3.5 15.27-3.3 10.9.48 19.64 4.26 26.22 11.34-9.87 5.96-14.72 14.31-14.55 25.05.18 8.44 3.38 15.48 9.6 21.12 6.22 5.64 13.78 8.78 22.68 9.42-2.12 6.27-4.8 12.37-8.04 18.3zm-27.3-102.6c0 6.64-2.43 12.98-7.29 19.02-5.11 6.28-11.45 9.87-19.02 10.77-.18-1.08-.27-2.07-.27-2.97 0-6.64 2.52-13.08 7.56-19.32 2.52-3.12 5.72-5.71 9.6-7.77 3.88-2.06 7.74-3.18 11.58-3.36.18 1.2.27 2.25.27 3.15z"/>
+        </svg>
+        <span class="nav-title">GenAI Finance</span>
+      </div>
+      <div class="nav-badge">Studio Research</div>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <!-- Hero Header -->
+    <section class="hero-section">
+      <h1 class="hero-title">Financial Intelligence.</h1>
+      <p class="hero-subtitle">Real-time ticker analysis paired with AI research synthesis.</p>
+    </section>
+
+    <!-- Interactive Config Panel -->
+    <section class="apple-card">
+      <form id="ticker-form" class="apple-form">
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="ticker" class="field-label">Stock Ticker</label>
+            <input id="ticker" name="ticker" type="text" placeholder="AAPL, MSFT, NVDA..." required autocomplete="off" value="AAPL" />
+          </div>
+          <div class="form-group preset-group">
+            <label class="field-label">&nbsp;</label>
+            <button type="button" id="btn-load-aapl-packet" class="apple-button secondary-btn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px;">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+              </svg>
+              Load AAPL Packet
+            </button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="twelvedata-key" class="field-label">Twelve Data API Key</label>
+          <input id="twelvedata-key" name="twelvedata-key" type="password" placeholder="Twelve Data key (or set VITE_TWELVEDATA_API_KEY)" />
+          <p class="field-hint">Covers US equities & ETFs (8 req/min free). Get a key at <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">twelvedata.com</a>.</p>
+        </div>
+
+        <div class="form-group">
+          <label for="openrouter-key" class="field-label">OpenRouter API Key</label>
+          <input id="openrouter-key" name="openrouter-key" type="password" placeholder="sk-or-... (or set VITE_OPENROUTER_API_KEY)" />
+          <p class="field-hint">Required for GenAI market research synthesis and sentiment analysis.</p>
+        </div>
+
+        <div class="packet-toggle-container">
+          <button type="button" id="toggle-packet-btn" class="text-link-btn">
+            <span id="packet-toggle-icon">▸</span> Optional: Include / Edit Research Packet JSON
+          </button>
+        </div>
+
+        <div id="packet-drawer" class="packet-drawer hidden">
+          <div class="form-group">
+            <label for="packet-json" class="field-label">Research Packet (JSON Context, Sentiment & Facts)</label>
+            <textarea id="packet-json" rows="6" placeholder='Paste earnings packet JSON here, or click "Load AAPL Packet" above...'></textarea>
+            <p class="field-hint">When provided, the LLM will analyze this exact research packet under strict equity analyst rules.</p>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="apple-button">Analyze Market & Sentiment</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Results Panel -->
+    <section class="apple-card results-card" id="results">
+      <div class="placeholder-state">
+        <div class="placeholder-icon">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+          </svg>
+        </div>
+        <h3 class="placeholder-title">Ready for Analysis</h3>
+        <p class="placeholder-text">Enter a ticker above to fetch market data and generate AI research notes.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="apple-footer">
+    <div class="footer-content">
+      <p>Designed with Apple-inspired precision. Powered by Twelve Data & OpenRouter.</p>
+    </div>
+  </footer>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
+
