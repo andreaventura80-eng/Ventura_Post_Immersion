@@ -102,7 +102,7 @@ body {
   line-height: 1.1;
   font-weight: 600;
   letter-spacing: -0.03em;
-  color: var(--apple-text-primary);
+  color: #8b0000;
 }
 
 .hero-subtitle {
