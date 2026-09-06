@@ -2479,7 +2479,8 @@ textarea#packet-json:focus {
   white-space: nowrap;
 }
 
-.btn-inspect-rsi {
+.btn-inspect-rsi,
+.btn-inspect-macd {
   background: var(--apple-bg);
   border: 1px solid var(--apple-border);
   border-radius: 6px;
@@ -2492,9 +2493,15 @@ textarea#packet-json:focus {
   white-space: nowrap;
 }
 
-.btn-inspect-rsi:hover {
+.btn-inspect-rsi:hover,
+.btn-inspect-macd:hover {
   border-color: var(--apple-blue);
   color: var(--apple-blue);
+}
+
+.btn-group-audit {
+  display: inline-flex;
+  gap: 4px;
 }
 
 tr.seed-window {
@@ -2504,6 +2511,14 @@ tr.seed-window {
 tr.seed-init {
   background-color: #eff6ff;
   font-weight: 600;
+}
+
+tr.macd-active {
+  background-color: #f8fafc;
+}
+
+tr.histogram-active {
+  background-color: #ffffff;
 }
 
 

@@ -503,6 +503,9 @@
               <button type="button" class="stage-3-tab" id="tab-rsi" role="tab" aria-selected="false" aria-controls="panel-rsi">
                 RSI(14) & Wilder Recursion
               </button>
+              <button type="button" class="stage-3-tab" id="tab-macd" role="tab" aria-selected="false" aria-controls="panel-macd">
+                MACD(12,26,9) & Histogram
+              </button>
               <button type="button" class="stage-3-tab" id="tab-slicer" role="tab" aria-selected="false" aria-controls="panel-slicer">
                 Sub-Matrix Slicer
               </button>
@@ -512,8 +515,8 @@
             <div class="stage-3-panel active" id="panel-volatilities" role="tabpanel" aria-labelledby="tab-volatilities">
               <div class="table-header-bar">
                 <div class="table-title-group">
-                  <h3 class="table-title">Constituent Volatilities, Returns & RSI(14)</h3>
-                  <span class="table-subtitle">Daily simple returns r_t = (P_t - P_t-1) / P_t-1, sample standard deviation (n-1), annualized volatility (x sqrt(252)), and Wilder RSI(14)</span>
+                  <h3 class="table-title">Constituent Volatilities, Returns, RSI(14) & MACD</h3>
+                  <span class="table-subtitle">Daily simple returns r_t = (P_t - P_t-1) / P_t-1, sample standard deviation (n-1), annualized volatility (x sqrt(252)), Wilder RSI(14), and MACD(12,26,9) series</span>
                 </div>
                 <div class="table-stats-group" id="volatilities-table-stats"></div>
               </div>
@@ -528,12 +531,15 @@
                       <th scope="col">Daily Variance (s^2)</th>
                       <th scope="col">Annualized Vol</th>
                       <th scope="col">RSI (14)</th>
-                      <th scope="col">Wilder Audit</th>
+                      <th scope="col">MACD (12,26)</th>
+                      <th scope="col">Signal (9)</th>
+                      <th scope="col">Histogram (H_t)</th>
+                      <th scope="col">Audit / Drill-Down</th>
                     </tr>
                   </thead>
                   <tbody id="volatilities-tbody">
                     <tr>
-                      <td colspan="8" class="table-empty-row">Run the pipeline from Stage 1 to compute simple returns, annualized volatility, and RSI(14).</td>
+                      <td colspan="11" class="table-empty-row">Run the pipeline from Stage 1 to compute simple returns, annualized volatility, RSI(14), and MACD.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -648,7 +654,96 @@
               </div>
             </div>
 
-            <!-- Panel 4: Sub-Matrix Slicer -->
+            <!-- Panel 4: MACD(12,26,9) & Histogram -->
+            <div class="stage-3-panel" id="panel-macd" role="tabpanel" aria-labelledby="tab-macd" hidden>
+              <div class="table-header-bar">
+                <div class="table-title-group">
+                  <h3 class="table-title">MACD Line, Signal Line & Histogram Series</h3>
+                  <span class="table-subtitle">EMA(12) of closes minus EMA(26) of closes, with EMA(9) signal line starting at close index 33 (session 34). Histogram H = MACD minus Signal.</span>
+                </div>
+                <div class="table-stats-group" id="macd-table-stats"></div>
+              </div>
+
+              <!-- Controls and Summary Cards -->
+              <div class="rsi-controls-bar">
+                <div class="form-group" style="margin-bottom: 0; min-width: 220px;">
+                  <label for="macd-ticker-select" class="form-label" style="font-size: 11px; margin-bottom: 4px;">Inspect Ticker</label>
+                  <select id="macd-ticker-select" class="form-select">
+                    <option value="">Run Stage 1 to calculate indicators</option>
+                  </select>
+                </div>
+                <div class="rsi-quick-tickers" id="macd-quick-tickers"></div>
+              </div>
+
+              <!-- Metrics Cards -->
+              <div class="stage-3-metrics-grid" style="margin-top: 1rem; margin-bottom: 1rem;">
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Selected Name</span>
+                  <span class="stage-3-metric-val" id="macd-card-ticker">--</span>
+                  <span class="metric-sub" id="macd-card-closes-count" style="font-size: 11px; color: var(--apple-text-secondary);">-- closes</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Current MACD Line</span>
+                  <span class="stage-3-metric-val" id="macd-card-macd">--</span>
+                  <span class="metric-sub" style="font-size: 11px; color: var(--apple-text-secondary);">EMA(12) - EMA(26)</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Current Signal Line</span>
+                  <span class="stage-3-metric-val" id="macd-card-signal">--</span>
+                  <span class="metric-sub" style="font-size: 11px; color: var(--apple-text-secondary);">EMA(9) of MACD line</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Current Histogram (H_t)</span>
+                  <span class="stage-3-metric-val" id="macd-card-hist">--</span>
+                  <span class="metric-sub" style="font-size: 11px; color: var(--apple-text-secondary);">H_t = MACD - Signal</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Lagged Pair H_(t-N)</span>
+                  <span class="stage-3-metric-val" id="macd-card-pair">--</span>
+                  <span class="metric-sub" id="macd-card-pair-sub" style="font-size: 11px; color: var(--apple-text-secondary);">histogramPair (N = 3)</span>
+                </div>
+              </div>
+
+              <!-- Mathematical Specification Card -->
+              <div class="rsi-explainer-card">
+                <div class="rsi-explainer-title">MACD (12, 26, 9) Mathematical Specification</div>
+                <p class="rsi-explainer-text">
+                  <strong>1. Fast and Slow EMAs:</strong> EMA helper seeded with simple mean of first N closes, then updated with multiplier <code>2 / (period + 1)</code>. Output starts at index <code>period - 1</code>.
+                  <br>
+                  <strong>2. MACD Line:</strong> <code>EMA(12) - EMA(26)</code> of closes, defined from close index 25 onward (session 26).
+                  <br>
+                  <strong>3. Signal Line:</strong> <code>EMA(9)</code> of the defined portion of the MACD line only, starting at MACD index 8, which is close index 33 (session 34).
+                  <br>
+                  <strong>4. Histogram H:</strong> <code>MACD line - Signal line</code>, defined from close index 33 onward (session 34). Full series is preserved for lookback evaluations.
+                </p>
+              </div>
+
+              <!-- Complete Recursion Table Container -->
+              <div class="table-scroll-container" style="max-height: 480px;">
+                <table class="apple-data-table" id="macd-records-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Session #</th>
+                      <th scope="col">Date</th>
+                      <th scope="col">Close ($)</th>
+                      <th scope="col">EMA(12)</th>
+                      <th scope="col">EMA(26)</th>
+                      <th scope="col">MACD Line</th>
+                      <th scope="col">Signal Line</th>
+                      <th scope="col">Histogram (H)</th>
+                      <th scope="col">Phase Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="macd-records-tbody">
+                    <tr>
+                      <td colspan="9" class="table-empty-row">Run the pipeline from Stage 1 to view MACD and histogram series.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Panel 5: Sub-Matrix Slicer -->
             <div class="stage-3-panel" id="panel-slicer" role="tabpanel" aria-labelledby="tab-slicer" hidden>
               <div class="slicer-card">
                 <div class="slicer-header">

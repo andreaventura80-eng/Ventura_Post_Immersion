@@ -2613,6 +2613,257 @@ export function computeRsi(closes, period = 14) {
 }
 
 /**
+ * Exponential Moving Average (EMA) helper seeded with the simple mean
+ * of its first "period" values, then updated with multiplier 2 / (period + 1).
+ * Output starts at index period - 1 of its input.
+ *
+ * @param {number[]} values - Array of numeric price or indicator values.
+ * @param {number} period - Number of sessions for the smoothing window.
+ * @returns {number[]} EMA series starting at input index period - 1.
+ */
+export function computeEma(values, period) {
+  const isArray = Array.isArray(values) === true;
+  const isPeriodValid = typeof period === "number" && period > 0;
+  const isInputValid = isArray === true && isPeriodValid === true;
+  if (isInputValid === false) {
+    return [];
+  }
+
+  const hasEnoughValues = values.length >= period;
+  if (hasEnoughValues === false) {
+    return [];
+  }
+
+  // Check if all values in the input are identical to prevent floating-point drift
+  let allIdentical = true;
+  const firstVal = values[0];
+  for (let i = 1; i < values.length; i += 1) {
+    if (values[i] !== firstVal) {
+      allIdentical = false;
+      break;
+    }
+  }
+
+  if (allIdentical === true) {
+    return new Array(values.length - period + 1).fill(firstVal);
+  }
+
+  const multiplier = 2 / (period + 1);
+  let sum = 0;
+  for (let i = 0; i < period; i += 1) {
+    const raw = values[i];
+    const isNum = typeof raw === "number";
+    const val = isNum === true ? raw : parseFloat(raw);
+    const isValidNum = isNaN(val) === false;
+    sum += isValidNum === true ? val : 0;
+  }
+
+  let prevEma = sum / period;
+  const ema = [prevEma];
+
+  for (let i = period; i < values.length; i += 1) {
+    const raw = values[i];
+    const isNum = typeof raw === "number";
+    const val = isNum === true ? raw : parseFloat(raw);
+    const num = isNaN(val) === false ? val : prevEma;
+    const curEma = (num - prevEma) * multiplier + prevEma;
+    ema.push(curEma);
+    prevEma = curEma;
+  }
+
+  return ema;
+}
+
+/**
+ * Computes MACD line, Signal line, and Histogram H for a series of closes.
+ * Parameters fixed at 12, 26, 9.
+ *
+ * - MACD line = EMA(12) minus EMA(26), defined from close index 25 onward.
+ * - Signal line = EMA(9) of the defined portion of the MACD line only,
+ *   starting at MACD index 8 (close index 33, session 34).
+ * - Histogram H = MACD line minus signal line, defined from close index 33 onward.
+ *
+ * Requires at least 34 closes (26 + 9 - 1).
+ *
+ * @param {number[]} closes - Array of chronologically aligned closing prices.
+ * @param {number} [fast=12] - Fast EMA period (default 12).
+ * @param {number} [slow=26] - Slow EMA period (default 26).
+ * @param {number} [signal=9] - Signal line EMA period (default 9).
+ * @returns {object} Indicator series and audit records.
+ */
+export function computeMacd(closes, fast = 12, slow = 26, signal = 9) {
+  const isArray = Array.isArray(closes) === true;
+  const fastPeriod = typeof fast === "number" && fast > 0 ? fast : 12;
+  const slowPeriod = typeof slow === "number" && slow > 0 ? slow : 26;
+  const signalPeriod = typeof signal === "number" && signal > 0 ? signal : 9;
+
+  const minRequiredCloses = slowPeriod + signalPeriod - 1; // 26 + 9 - 1 = 34
+  const hasSufficientCloses = isArray === true && closes.length >= minRequiredCloses;
+
+  if (hasSufficientCloses === false) {
+    const count = isArray === true ? closes.length : 0;
+    return {
+      insufficientHistory: true,
+      closesCount: count,
+      fastPeriod: fastPeriod,
+      slowPeriod: slowPeriod,
+      signalPeriod: signalPeriod,
+      macdStartIndex: slowPeriod - 1,
+      signalStartIndex: slowPeriod + signalPeriod - 2,
+      histogramStartIndex: slowPeriod + signalPeriod - 2,
+      macdSeries: [],
+      signalSeries: [],
+      histogramSeries: [],
+      records: [],
+      currentMacd: null,
+      currentSignal: null,
+      currentHistogram: null
+    };
+  }
+
+  const emaFast = computeEma(closes, fastPeriod);
+  const emaSlow = computeEma(closes, slowPeriod);
+
+  const macdSeries = [];
+  const fastOffset = slowPeriod - fastPeriod; // 26 - 12 = 14
+  for (let i = 0; i < emaSlow.length; i += 1) {
+    const fastVal = emaFast[i + fastOffset];
+    const slowVal = emaSlow[i];
+    let diff = fastVal - slowVal;
+    if (Math.abs(diff) < 1e-12) {
+      diff = 0;
+    }
+    macdSeries.push(diff);
+  }
+
+  const signalSeries = computeEma(macdSeries, signalPeriod);
+
+  const histogramSeries = [];
+  const records = [];
+  const macdSignalOffset = signalPeriod - 1; // 9 - 1 = 8
+  const baseCloseIndex = (slowPeriod - 1) + macdSignalOffset; // 25 + 8 = 33 (session 34)
+
+  for (let i = 0; i < signalSeries.length; i += 1) {
+    const macdVal = macdSeries[i + macdSignalOffset];
+    const signalVal = signalSeries[i];
+    let histVal = macdVal - signalVal;
+    if (Math.abs(histVal) < 1e-12) {
+      histVal = 0;
+    }
+    const currentCloseIndex = baseCloseIndex + i;
+
+    histogramSeries.push(histVal);
+    records.push({
+      session: currentCloseIndex + 1,
+      closeIndex: currentCloseIndex,
+      macd: macdVal,
+      signal: signalVal,
+      histogram: histVal
+    });
+  }
+
+  const hasMacd = macdSeries.length > 0;
+  const currentMacd = hasMacd === true ? macdSeries[macdSeries.length - 1] : null;
+
+  const hasSignal = signalSeries.length > 0;
+  const currentSignal = hasSignal === true ? signalSeries[signalSeries.length - 1] : null;
+
+  const hasHistogram = histogramSeries.length > 0;
+  const currentHistogram = hasHistogram === true ? histogramSeries[histogramSeries.length - 1] : null;
+
+  return {
+    insufficientHistory: false,
+    closesCount: closes.length,
+    fastPeriod: fastPeriod,
+    slowPeriod: slowPeriod,
+    signalPeriod: signalPeriod,
+    macdStartIndex: slowPeriod - 1, // 25
+    signalStartIndex: baseCloseIndex, // 33
+    histogramStartIndex: baseCloseIndex, // 33
+    macdSeries: macdSeries,
+    signalSeries: signalSeries,
+    histogramSeries: histogramSeries,
+    records: records,
+    currentMacd: currentMacd,
+    currentSignal: currentSignal,
+    currentHistogram: currentHistogram
+  };
+}
+
+/**
+ * Returns { current, lagged } for H_t and H_(t-N), or an insufficient-history
+ * result when the series has fewer than N + 1 histogram values.
+ *
+ * @param {object|number[]} series - Object from computeMacd or array of histogram values.
+ * @param {number} N - Histogram lookback session offset (e.g. 2 to 10).
+ * @returns {object} Object with current, lagged, difference, and isRising.
+ */
+export function histogramPair(series, N) {
+  const isLookbackValid = typeof N === "number" && N > 0;
+  if (isLookbackValid === false) {
+    return {
+      insufficientHistory: true,
+      current: null,
+      lagged: null,
+      difference: null,
+      isRising: null,
+      lookback: N,
+      requiredHistogramValues: null,
+      actualHistogramValues: 0
+    };
+  }
+
+  let histArr = [];
+  const isArray = Array.isArray(series) === true;
+  if (isArray === true) {
+    histArr = series;
+  } else {
+    const isObj = series !== null && typeof series === "object";
+    if (isObj === true) {
+      const hasHistSeries = Array.isArray(series.histogramSeries) === true;
+      if (hasHistSeries === true) {
+        histArr = series.histogramSeries;
+      }
+    }
+  }
+
+  const requiredValues = N + 1;
+  const hasEnoughValues = histArr.length >= requiredValues;
+  if (hasEnoughValues === false) {
+    return {
+      insufficientHistory: true,
+      current: null,
+      lagged: null,
+      difference: null,
+      isRising: null,
+      lookback: N,
+      requiredHistogramValues: requiredValues,
+      actualHistogramValues: histArr.length
+    };
+  }
+
+  const currentVal = histArr[histArr.length - 1];
+  const laggedVal = histArr[histArr.length - 1 - N];
+  let diff = currentVal - laggedVal;
+  if (Math.abs(diff) < 1e-12) {
+    diff = 0;
+  }
+  const isRising = currentVal > laggedVal;
+
+  return {
+    insufficientHistory: false,
+    current: currentVal,
+    lagged: laggedVal,
+    difference: diff,
+    isRising: isRising,
+    lookback: N,
+    requiredHistogramValues: requiredValues,
+    actualHistogramValues: histArr.length
+  };
+}
+
+
+/**
  * Computes daily simple returns, daily standard deviation, annualized volatility,
  * sample covariance matrix across all aligned constituent tickers, and Wilder RSI(14).
  * SPY returns and volatility are computed on its own dates and kept out of the matrix.
@@ -2637,9 +2888,10 @@ export function computeReturnsAndCovariance() {
   const dailyStdByTicker = {};
   const annualizedVolByTicker = {};
   const rsiByTicker = {};
+  const macdByTicker = {};
   const perTickerData = {};
 
-  // Compute returns, volatilities, and Wilder RSI(14) for each constituent
+  // Compute returns, volatilities, Wilder RSI(14), and MACD(12,26,9) for each constituent
   for (let i = 0; i < constituentTickers.length; i += 1) {
     const ticker = constituentTickers[i];
     const prices = aligned.prices[ticker];
@@ -2656,16 +2908,19 @@ export function computeReturnsAndCovariance() {
     const dStd = computeDailyStd(retSeries);
     const annVol = computeAnnualizedVol(dStd);
     const rsiResult = computeRsi(prices, 14);
+    const macdResult = computeMacd(prices, 12, 26, 9);
 
     returnsByTicker[ticker] = retSeries;
     dailyStdByTicker[ticker] = dStd;
     annualizedVolByTicker[ticker] = annVol;
     rsiByTicker[ticker] = rsiResult;
+    macdByTicker[ticker] = macdResult;
     perTickerData[ticker] = {
       returns: [...retSeries],
       dailyStd: dStd,
       annualizedVol: annVol,
-      rsi: rsiResult
+      rsi: rsiResult,
+      macd: macdResult
     };
   }
 
@@ -2683,7 +2938,7 @@ export function computeReturnsAndCovariance() {
     }
   }
 
-  // Compute SPY return series and RSI on its own dates (kept out of the covariance matrix)
+  // Compute SPY return series, RSI, and MACD on its own dates (kept out of the covariance matrix)
   let spyData = null;
   const hasSpy = aligned.spy !== null && typeof aligned.spy === "object" && Array.isArray(aligned.spy.prices) === true;
   if (hasSpy === true) {
@@ -2692,13 +2947,15 @@ export function computeReturnsAndCovariance() {
     const spyStd = computeDailyStd(spyReturns);
     const spyAnnVol = computeAnnualizedVol(spyStd);
     const spyRsi = computeRsi(spyPrices, 14);
+    const spyMacd = computeMacd(spyPrices, 12, 26, 9);
     const spyReturnDates = aligned.spy.dates.slice(1);
     spyData = {
       dates: spyReturnDates,
       returns: spyReturns,
       dailyStd: spyStd,
       annualizedVol: spyAnnVol,
-      rsi: spyRsi
+      rsi: spyRsi,
+      macd: spyMacd
     };
   }
 
@@ -2743,6 +3000,7 @@ export function computeReturnsAndCovariance() {
     covarianceMatrix: covarianceMatrix,
     covarianceTickers: [...constituentTickers],
     rsi: rsiByTicker,
+    macd: macdByTicker,
     spy: spyData
   };
 
@@ -2844,13 +3102,11 @@ export function renderVolatilitiesTable() {
     // RSI(14) data
     const rsiData = (ind.rsi && ind.rsi[ticker]) || (ind.perTicker && ind.perTicker[ticker] && ind.perTicker[ticker].rsi);
     let rsiCellHtml = "--";
-    let auditBtnHtml = "--";
 
     if (rsiData !== null && rsiData !== undefined) {
       const isInsufficient = rsiData.insufficientHistory === true;
       if (isInsufficient === true) {
         rsiCellHtml = `<span class="badge-insufficient">insufficient history</span>`;
-        auditBtnHtml = `<span class="price-mono" style="color: var(--apple-text-secondary); font-size: 11px;">(min 15 closes)</span>`;
       } else {
         const rsiVal = rsiData.currentRsi;
         const isNum = typeof rsiVal === "number" && isNaN(rsiVal) === false;
@@ -2864,10 +3120,41 @@ export function renderVolatilitiesTable() {
             badgeHtml = `<span class="badge-rsi-overbought">Overbought</span>`;
           }
           rsiCellHtml = `<span class="price-mono" style="font-weight: 700; color: var(--apple-text-primary);">${rsiVal.toFixed(2)}</span>${badgeHtml}`;
-          auditBtnHtml = `<button type="button" class="btn-inspect-rsi" data-ticker="${ticker}">Inspect Recursion</button>`;
         }
       }
     }
+
+    // MACD(12,26,9) data
+    const macdData = (ind.macd && ind.macd[ticker]) || (ind.perTicker && ind.perTicker[ticker] && ind.perTicker[ticker].macd);
+    let macdCellHtml = "--";
+    let signalCellHtml = "--";
+    let histCellHtml = "--";
+
+    if (macdData !== null && macdData !== undefined) {
+      const isInsufficient = macdData.insufficientHistory === true;
+      if (isInsufficient === true) {
+        macdCellHtml = `<span class="badge-insufficient">insufficient history</span>`;
+        signalCellHtml = "--";
+        histCellHtml = "--";
+      } else {
+        const mVal = macdData.currentMacd;
+        const sVal = macdData.currentSignal;
+        const hVal = macdData.currentHistogram;
+        const hasNumbers = typeof mVal === "number" && typeof sVal === "number" && typeof hVal === "number";
+        if (hasNumbers === true) {
+          macdCellHtml = `<span class="price-mono">${mVal >= 0 ? "+" + mVal.toFixed(4) : mVal.toFixed(4)}</span>`;
+          signalCellHtml = `<span class="price-mono">${sVal >= 0 ? "+" + sVal.toFixed(4) : sVal.toFixed(4)}</span>`;
+          histCellHtml = `<span class="price-mono" style="font-weight: 700; color: var(--apple-text-primary);">${hVal >= 0 ? "+" + hVal.toFixed(4) : hVal.toFixed(4)}</span>`;
+        }
+      }
+    }
+
+    const auditBtnHtml = `
+      <div class="btn-group-audit">
+        <button type="button" class="btn-inspect-rsi" data-ticker="${ticker}">RSI</button>
+        <button type="button" class="btn-inspect-macd" data-ticker="${ticker}">MACD</button>
+      </div>
+    `;
 
     html += `
       <tr>
@@ -2882,6 +3169,9 @@ export function renderVolatilitiesTable() {
         <td><span class="price-mono">${varianceText}</span></td>
         <td><span class="price-mono" style="font-weight: 700; color: var(--apple-text-primary);">${annVolText}</span></td>
         <td>${rsiCellHtml}</td>
+        <td>${macdCellHtml}</td>
+        <td>${signalCellHtml}</td>
+        <td>${histCellHtml}</td>
         <td>${auditBtnHtml}</td>
       </tr>
     `;
@@ -2896,21 +3186,48 @@ export function renderVolatilitiesTable() {
 
     const spyRsi = (ind.spy && ind.spy.rsi) || (ind.rsi && ind.rsi["SPY"]);
     let spyRsiCellHtml = "--";
-    let spyAuditBtnHtml = "--";
     if (spyRsi !== null && spyRsi !== undefined) {
       const isInsufficient = spyRsi.insufficientHistory === true;
       if (isInsufficient === true) {
         spyRsiCellHtml = `<span class="badge-insufficient">insufficient history</span>`;
-        spyAuditBtnHtml = `<span class="price-mono" style="color: var(--apple-text-secondary); font-size: 11px;">(min 15 closes)</span>`;
       } else {
         const spyVal = spyRsi.currentRsi;
         const isNum = typeof spyVal === "number" && isNaN(spyVal) === false;
         if (isNum === true) {
           spyRsiCellHtml = `<span class="price-mono" style="font-weight: 700; color: var(--apple-blue);">${spyVal.toFixed(2)}</span>`;
-          spyAuditBtnHtml = `<button type="button" class="btn-inspect-rsi" data-ticker="SPY">Inspect Recursion</button>`;
         }
       }
     }
+
+    const spyMacd = (ind.spy && ind.spy.macd) || (ind.macd && ind.macd["SPY"]);
+    let spyMacdCellHtml = "--";
+    let spySignalCellHtml = "--";
+    let spyHistCellHtml = "--";
+    if (spyMacd !== null && spyMacd !== undefined) {
+      const isInsufficient = spyMacd.insufficientHistory === true;
+      if (isInsufficient === true) {
+        spyMacdCellHtml = `<span class="badge-insufficient">insufficient history</span>`;
+        spySignalCellHtml = "--";
+        spyHistCellHtml = "--";
+      } else {
+        const mVal = spyMacd.currentMacd;
+        const sVal = spyMacd.currentSignal;
+        const hVal = spyMacd.currentHistogram;
+        const hasNumbers = typeof mVal === "number" && typeof sVal === "number" && typeof hVal === "number";
+        if (hasNumbers === true) {
+          spyMacdCellHtml = `<span class="price-mono">${mVal >= 0 ? "+" + mVal.toFixed(4) : mVal.toFixed(4)}</span>`;
+          spySignalCellHtml = `<span class="price-mono">${sVal >= 0 ? "+" + sVal.toFixed(4) : sVal.toFixed(4)}</span>`;
+          spyHistCellHtml = `<span class="price-mono" style="font-weight: 700; color: var(--apple-blue);">${hVal >= 0 ? "+" + hVal.toFixed(4) : hVal.toFixed(4)}</span>`;
+        }
+      }
+    }
+
+    const spyAuditBtnHtml = `
+      <div class="btn-group-audit">
+        <button type="button" class="btn-inspect-rsi" data-ticker="SPY">RSI</button>
+        <button type="button" class="btn-inspect-macd" data-ticker="SPY">MACD</button>
+      </div>
+    `;
 
     html += `
       <tr style="background: #fafbfc; border-top: 2px solid var(--apple-border);">
@@ -2926,6 +3243,9 @@ export function renderVolatilitiesTable() {
         <td><span class="price-mono">${spyVar.toFixed(6)}</span></td>
         <td><span class="price-mono" style="font-weight: 700; color: var(--apple-blue);">${(spyAnnVol * 100).toFixed(2)}%</span></td>
         <td>${spyRsiCellHtml}</td>
+        <td>${spyMacdCellHtml}</td>
+        <td>${spySignalCellHtml}</td>
+        <td>${spyHistCellHtml}</td>
         <td>${spyAuditBtnHtml}</td>
       </tr>
     `;
@@ -3395,6 +3715,307 @@ export function renderRsiPanelUI(targetTicker) {
   }
 }
 
+let currentMacdSelectedTicker = null;
+
+/**
+ * Renders the MACD line, signal line, and histogram inspection panel.
+ * Displays current values, lagged pair comparison H_t and H_(t-N),
+ * and session-by-session recursion records.
+ *
+ * @param {string} [targetTicker] - Ticker symbol to inspect.
+ */
+export function renderMacdPanelUI(targetTicker) {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const ind = appState.indicatorSeries;
+  const aligned = appState.alignedData;
+  const selectEl = document.getElementById("macd-ticker-select");
+  const quickEl = document.getElementById("macd-quick-tickers");
+  const statsEl = document.getElementById("macd-table-stats");
+  const tbodyEl = document.getElementById("macd-records-tbody");
+
+  const cardTickerEl = document.getElementById("macd-card-ticker");
+  const cardClosesEl = document.getElementById("macd-card-closes-count");
+  const cardMacdEl = document.getElementById("macd-card-macd");
+  const cardSignalEl = document.getElementById("macd-card-signal");
+  const cardHistEl = document.getElementById("macd-card-hist");
+  const cardPairEl = document.getElementById("macd-card-pair");
+  const cardPairSubEl = document.getElementById("macd-card-pair-sub");
+
+  const hasInd = ind !== null && typeof ind === "object";
+  const hasAligned = aligned !== null && typeof aligned === "object";
+  const hasData = hasInd === true && hasAligned === true && Array.isArray(ind.tickers) === true && ind.tickers.length > 0;
+
+  if (hasData === false) {
+    if (selectEl !== null) {
+      selectEl.innerHTML = `<option value="">Run Stage 1 to calculate indicators</option>`;
+    }
+    if (quickEl !== null) {
+      quickEl.innerHTML = "";
+    }
+    if (statsEl !== null) {
+      statsEl.textContent = "";
+    }
+    if (tbodyEl !== null) {
+      tbodyEl.innerHTML = `<tr><td colspan="9" class="table-empty-row">Run the pipeline from Stage 1 to view MACD and histogram series.</td></tr>`;
+    }
+    if (cardTickerEl !== null) {
+      cardTickerEl.textContent = "--";
+    }
+    if (cardClosesEl !== null) {
+      cardClosesEl.textContent = "-- closes";
+    }
+    if (cardMacdEl !== null) {
+      cardMacdEl.textContent = "--";
+    }
+    if (cardSignalEl !== null) {
+      cardSignalEl.textContent = "--";
+    }
+    if (cardHistEl !== null) {
+      cardHistEl.textContent = "--";
+    }
+    if (cardPairEl !== null) {
+      cardPairEl.textContent = "--";
+    }
+    if (cardPairSubEl !== null) {
+      cardPairSubEl.textContent = "histogramPair (N = 3)";
+    }
+    return;
+  }
+
+  const availableTickers = [...ind.tickers];
+  const hasSpy = ind.spy !== null && ind.spy !== undefined;
+  if (hasSpy === true) {
+    availableTickers.push("SPY");
+  }
+
+  let activeTicker = targetTicker;
+  const isTargetValid = typeof activeTicker === "string" && availableTickers.includes(activeTicker);
+  if (isTargetValid === false) {
+    const isCurrentValid = currentMacdSelectedTicker !== null && availableTickers.includes(currentMacdSelectedTicker);
+    if (isCurrentValid === true) {
+      activeTicker = currentMacdSelectedTicker;
+    } else {
+      activeTicker = availableTickers[0];
+    }
+  }
+  currentMacdSelectedTicker = activeTicker;
+
+  // Update select dropdown
+  if (selectEl !== null) {
+    let opts = "";
+    for (let i = 0; i < availableTickers.length; i += 1) {
+      const t = availableTickers[i];
+      const isSelected = t === activeTicker;
+      const isSpyTicker = t === "SPY";
+      const macdObj = isSpyTicker === true ? (ind.spy && ind.spy.macd) : (ind.macd && ind.macd[t]);
+      let histStr = "--";
+      if (macdObj !== null && macdObj !== undefined) {
+        const isNotInsufficient = macdObj.insufficientHistory === false;
+        const hasHistVal = macdObj.currentHistogram !== null && macdObj.currentHistogram !== undefined;
+        if (isNotInsufficient === true && hasHistVal === true) {
+          histStr = `${macdObj.currentHistogram >= 0 ? "+" : ""}${macdObj.currentHistogram.toFixed(4)}`;
+        }
+      }
+      opts += `<option value="${t}" ${isSelected === true ? "selected" : ""}>${t} (Hist: ${histStr})</option>`;
+    }
+    selectEl.innerHTML = opts;
+  }
+
+  // Update quick buttons
+  if (quickEl !== null) {
+    let btnsHtml = "";
+    for (let i = 0; i < availableTickers.length; i += 1) {
+      const t = availableTickers[i];
+      const isActive = t === activeTicker;
+      btnsHtml += `<button type="button" class="btn-quick-ticker ${isActive === true ? "active" : ""}" data-macd-ticker="${t}">${t}</button>`;
+    }
+    quickEl.innerHTML = btnsHtml;
+  }
+
+  const isSpy = activeTicker === "SPY";
+  const closes = isSpy === true ? aligned.spy.prices : aligned.prices[activeTicker];
+  const dates = isSpy === true ? aligned.spy.dates : aligned.dates;
+  const macdObj = isSpy === true ? (ind.spy && ind.spy.macd) : (ind.macd && ind.macd[activeTicker]);
+
+  const hasCloses = Array.isArray(closes) === true && closes.length > 0;
+  if (hasCloses === false || macdObj === null || macdObj === undefined) {
+    if (tbodyEl !== null) {
+      tbodyEl.innerHTML = `<tr><td colspan="9" class="table-empty-row">No MACD data available for ${activeTicker}.</td></tr>`;
+    }
+    return;
+  }
+
+  if (statsEl !== null) {
+    statsEl.textContent = `Displaying ${activeTicker} | ${closes.length} sessions`;
+  }
+
+  const lookback = appState.settings !== null && typeof appState.settings.histogramLookback === "number" ? appState.settings.histogramLookback : 3;
+
+  const isInsufficient = macdObj.insufficientHistory === true;
+  if (isInsufficient === true) {
+    if (cardTickerEl !== null) {
+      cardTickerEl.textContent = activeTicker;
+    }
+    if (cardClosesEl !== null) {
+      cardClosesEl.textContent = `${closes.length} closes (min 34 required)`;
+    }
+    if (cardMacdEl !== null) {
+      cardMacdEl.textContent = "insufficient history";
+    }
+    if (cardSignalEl !== null) {
+      cardSignalEl.textContent = "--";
+    }
+    if (cardHistEl !== null) {
+      cardHistEl.textContent = "--";
+    }
+    if (cardPairEl !== null) {
+      cardPairEl.textContent = "--";
+    }
+    if (cardPairSubEl !== null) {
+      cardPairSubEl.textContent = `histogramPair (N = ${lookback})`;
+    }
+    if (tbodyEl !== null) {
+      tbodyEl.innerHTML = `<tr><td colspan="9" class="table-empty-row">Insufficient history: ${activeTicker} has only ${closes.length} closes (minimum 34 required for MACD, Signal, and Histogram).</td></tr>`;
+    }
+    return;
+  }
+
+  // Populate cards with valid MACD data
+  if (cardTickerEl !== null) {
+    cardTickerEl.textContent = activeTicker;
+  }
+  if (cardClosesEl !== null) {
+    cardClosesEl.textContent = `${closes.length} closes (${macdObj.histogramSeries.length} histogram sessions)`;
+  }
+  if (cardMacdEl !== null) {
+    const hasMacdVal = macdObj.currentMacd !== null && macdObj.currentMacd !== undefined;
+    cardMacdEl.textContent = hasMacdVal === true ? `${macdObj.currentMacd >= 0 ? "+" : ""}${macdObj.currentMacd.toFixed(4)}` : "--";
+  }
+  if (cardSignalEl !== null) {
+    const hasSigVal = macdObj.currentSignal !== null && macdObj.currentSignal !== undefined;
+    cardSignalEl.textContent = hasSigVal === true ? `${macdObj.currentSignal >= 0 ? "+" : ""}${macdObj.currentSignal.toFixed(4)}` : "--";
+  }
+  if (cardHistEl !== null) {
+    const hasHistVal = macdObj.currentHistogram !== null && macdObj.currentHistogram !== undefined;
+    cardHistEl.textContent = hasHistVal === true ? `${macdObj.currentHistogram >= 0 ? "+" : ""}${macdObj.currentHistogram.toFixed(4)}` : "--";
+  }
+
+  // Lookback pair evaluation using histogramPair(series, N)
+  const pair = histogramPair(macdObj, lookback);
+  if (cardPairEl !== null && cardPairSubEl !== null) {
+    const isPairInsufficient = pair.insufficientHistory === true;
+    if (isPairInsufficient === true) {
+      cardPairEl.textContent = "Insufficient";
+      cardPairSubEl.textContent = `Requires at least ${34 + lookback} closes (has ${closes.length})`;
+    } else {
+      const curStr = `${pair.current >= 0 ? "+" : ""}${pair.current.toFixed(4)}`;
+      const lagStr = `${pair.lagged >= 0 ? "+" : ""}${pair.lagged.toFixed(4)}`;
+      const diffStr = `${pair.difference >= 0 ? "+" : ""}${pair.difference.toFixed(4)}`;
+      cardPairEl.textContent = `H_t: ${curStr} | H_(t-${lookback}): ${lagStr}`;
+      cardPairSubEl.textContent = `Diff: ${diffStr} (N = ${lookback})`;
+    }
+  }
+
+  // Render session-by-session table
+  if (tbodyEl !== null) {
+    let rowsHtml = "";
+    const emaFast = computeEma(closes, 12);
+    const emaSlow = computeEma(closes, 26);
+    const macdSeries = macdObj.macdSeries;
+    const signalSeries = macdObj.signalSeries;
+    const histogramSeries = macdObj.histogramSeries;
+
+    for (let i = 0; i < closes.length; i += 1) {
+      const sessionNum = i + 1;
+      const dateStr = dates[i] || `Session ${sessionNum}`;
+      const closeVal = closes[i];
+
+      // EMA(12) exists from index 11 (session 12)
+      let ema12Str = "--";
+      const hasEma12 = i >= 11;
+      if (hasEma12 === true) {
+        const val = emaFast[i - 11];
+        if (typeof val === "number" && isNaN(val) === false) {
+          ema12Str = val.toFixed(4);
+        }
+      }
+
+      // EMA(26) exists from index 25 (session 26)
+      let ema26Str = "--";
+      const hasEma26 = i >= 25;
+      if (hasEma26 === true) {
+        const val = emaSlow[i - 25];
+        if (typeof val === "number" && isNaN(val) === false) {
+          ema26Str = val.toFixed(4);
+        }
+      }
+
+      // MACD line exists from index 25 (session 26)
+      let macdStr = "--";
+      if (hasEma26 === true) {
+        const val = macdSeries[i - 25];
+        if (typeof val === "number" && isNaN(val) === false) {
+          macdStr = `${val >= 0 ? "+" : ""}${val.toFixed(4)}`;
+        }
+      }
+
+      // Signal line and Histogram exist from index 33 (session 34)
+      let signalStr = "--";
+      let histStr = "--";
+      const hasSignal = i >= 33;
+      if (hasSignal === true) {
+        const sigVal = signalSeries[i - 33];
+        if (typeof sigVal === "number" && isNaN(sigVal) === false) {
+          signalStr = `${sigVal >= 0 ? "+" : ""}${sigVal.toFixed(4)}`;
+        }
+        const hVal = histogramSeries[i - 33];
+        if (typeof hVal === "number" && isNaN(hVal) === false) {
+          histStr = `${hVal >= 0 ? "+" : ""}${hVal.toFixed(4)}`;
+        }
+      }
+
+      let rowClass = "seed-window";
+      let statusDesc = "";
+      if (i < 11) {
+        rowClass = "seed-window";
+        statusDesc = "EMA(12) seed window (closes 1-12)";
+      } else if (i < 25) {
+        rowClass = "seed-window";
+        statusDesc = "EMA(12) active, EMA(26) seed window";
+      } else if (i < 33) {
+        rowClass = "macd-active";
+        statusDesc = "MACD line active, Signal(9) seed window";
+      } else if (i === 33) {
+        rowClass = "seed-init";
+        statusDesc = "Signal(9) seeded, first Histogram (session 34)";
+      } else {
+        rowClass = "histogram-active";
+        statusDesc = `Full indicator active (session ${sessionNum})`;
+      }
+
+      rowsHtml += `
+        <tr class="${rowClass}">
+          <td><span class="price-mono">${sessionNum}</span></td>
+          <td><span class="date-mono">${dateStr}</span></td>
+          <td><span class="price-mono">${closeVal.toFixed(2)}</span></td>
+          <td><span class="price-mono">${ema12Str}</span></td>
+          <td><span class="price-mono">${ema26Str}</span></td>
+          <td><span class="price-mono">${macdStr}</span></td>
+          <td><span class="price-mono">${signalStr}</span></td>
+          <td><span class="price-mono" style="font-weight: ${hasSignal === true ? "700" : "400"};">${histStr}</span></td>
+          <td><span class="sector-text">${statusDesc}</span></td>
+        </tr>
+      `;
+    }
+
+    tbodyEl.innerHTML = rowsHtml;
+  }
+}
+
 /**
  * Renders all components in Stage 3 indicators.
  */
@@ -3403,6 +4024,7 @@ export function renderIndicatorsUI() {
   renderVolatilitiesTable();
   renderCovarianceMatrixTable();
   renderRsiPanelUI();
+  renderMacdPanelUI();
 }
 
 /**
@@ -3419,6 +4041,7 @@ export function setupStage3() {
     { btnId: "tab-volatilities", panelId: "panel-volatilities" },
     { btnId: "tab-covariance", panelId: "panel-covariance" },
     { btnId: "tab-rsi", panelId: "panel-rsi" },
+    { btnId: "tab-macd", panelId: "panel-macd" },
     { btnId: "tab-slicer", panelId: "panel-slicer" }
   ];
 
@@ -3460,14 +4083,26 @@ export function setupStage3() {
     });
   }
 
+  // MACD dropdown selection
+  const macdSelect = document.getElementById("macd-ticker-select");
+  if (macdSelect !== null) {
+    macdSelect.addEventListener("change", (evt) => {
+      const ticker = evt.target.value;
+      const hasTicker = typeof ticker === "string" && ticker.length > 0;
+      if (hasTicker === true) {
+        renderMacdPanelUI(ticker);
+      }
+    });
+  }
+
   // Delegated clicks for inspect buttons and quick ticker buttons
   document.addEventListener("click", (evt) => {
     const target = evt.target;
     if (target === null || target === undefined) {
       return;
     }
-    const isInspectBtn = target.matches(".btn-inspect-rsi");
-    if (isInspectBtn === true) {
+    const isInspectRsiBtn = target.matches(".btn-inspect-rsi");
+    if (isInspectRsiBtn === true) {
       const ticker = target.getAttribute("data-ticker");
       const hasTicker = typeof ticker === "string" && ticker.length > 0;
       if (hasTicker === true) {
@@ -3479,12 +4114,34 @@ export function setupStage3() {
       }
       return;
     }
-    const isQuickBtn = target.matches(".btn-quick-ticker");
-    if (isQuickBtn === true) {
+    const isInspectMacdBtn = target.matches(".btn-inspect-macd");
+    if (isInspectMacdBtn === true) {
+      const ticker = target.getAttribute("data-ticker");
+      const hasTicker = typeof ticker === "string" && ticker.length > 0;
+      if (hasTicker === true) {
+        const macdTabBtn = document.getElementById("tab-macd");
+        if (macdTabBtn !== null) {
+          macdTabBtn.click();
+        }
+        renderMacdPanelUI(ticker);
+      }
+      return;
+    }
+    const isRsiQuickBtn = target.matches("#rsi-quick-tickers .btn-quick-ticker");
+    if (isRsiQuickBtn === true) {
       const ticker = target.getAttribute("data-ticker");
       const hasTicker = typeof ticker === "string" && ticker.length > 0;
       if (hasTicker === true) {
         renderRsiPanelUI(ticker);
+      }
+      return;
+    }
+    const isMacdQuickBtn = target.matches("#macd-quick-tickers .btn-quick-ticker");
+    if (isMacdQuickBtn === true) {
+      const ticker = target.getAttribute("data-macd-ticker");
+      const hasTicker = typeof ticker === "string" && ticker.length > 0;
+      if (hasTicker === true) {
+        renderMacdPanelUI(ticker);
       }
       return;
     }
@@ -3874,6 +4531,10 @@ if (hasWindow === true) {
   window.setupStage3 = setupStage3;
   window.computeRsi = computeRsi;
   window.renderRsiPanelUI = renderRsiPanelUI;
+  window.computeEma = computeEma;
+  window.computeMacd = computeMacd;
+  window.histogramPair = histogramPair;
+  window.renderMacdPanelUI = renderMacdPanelUI;
 }
 
 function initializeApp() {
