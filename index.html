@@ -12,13 +12,16 @@
   <header class="apple-nav">
     <div class="nav-content">
       <div class="nav-brand">
-        <svg class="bouncing-arrow-logo" id="header-bouncing-arrow" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-label="Bouncing arrow logo" role="img">
-          <!-- Ground line -->
-          <line class="arrow-ground-line" x1="3" y1="21" x2="21" y2="21" />
-          <!-- Downward arrow bouncing to the ground -->
-          <g class="arrow-bouncing-group">
-            <line class="arrow-stem" x1="12" y1="3" x2="12" y2="16" />
-            <polyline class="arrow-head" points="7.5 11.5 12 16 16.5 11.5" />
+        <svg class="bouncing-arrows-logo" id="header-bouncing-arrows" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-label="Alternating bouncing arrows logo" role="img">
+          <!-- Downward arrow: red, bounces downward -->
+          <g class="arrow-down-red" id="nav-arrow-down">
+            <line x1="7" y1="4.5" x2="7" y2="17.5" stroke="#dc2626" />
+            <polyline points="3.5 14 7 17.5 10.5 14" stroke="#dc2626" />
+          </g>
+          <!-- Upward arrow: green, bounces upward -->
+          <g class="arrow-up-green" id="nav-arrow-up">
+            <line x1="17" y1="19.5" x2="17" y2="6.5" stroke="#16a34a" />
+            <polyline points="13.5 10 17 6.5 20.5 10" stroke="#16a34a" />
           </g>
         </svg>
         <span class="nav-title">Oversold Turn</span>

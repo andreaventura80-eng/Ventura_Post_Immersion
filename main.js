@@ -9177,6 +9177,7 @@ export function runStage6Optimization() {
 
   setStageStatus(6, "done");
   renderStage6UI();
+  renderStage9UI();
 }
 
 /**
@@ -9685,14 +9686,14 @@ export function renderStage6UI() {
     <div class="stage-6-container">
       ${consistencyHtml}
 
-      <div class="stage-6-header-actions">
+      <div class="stage-6-header-actions" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
         <div class="stage-6-header-info">
           <h3 class="stage-6-title">Minimum Variance Portfolio & Reference Benchmarks</h3>
           <p class="stage-6-subtitle">
             Optimized across ${n} gated survivors with ${(effectiveCap * 100).toFixed(0)}% position cap and 50% GICS sector ceiling.
           </p>
         </div>
-        <button type="button" class="btn-secondary" id="btn-reoptimize-stage6" style="font-size: 12px; padding: 6px 14px;">
+        <button type="button" class="btn-secondary" id="btn-reoptimize-stage6" style="font-size: 12px; padding: 7px 14px;">
           Re-optimize
         </button>
       </div>
@@ -12773,18 +12774,29 @@ export function cancelBacktest() {
 
 /**
  * Starts the walk-forward backtest by spawning the dedicated Web Worker.
+ * Executes on the constituents selected at Stage 6.
  */
 export function startBacktest() {
+  // Expand Stage 9 section and scroll into view smoothly
+  const body9 = document.getElementById("stage-body-9");
+  const header9 = document.getElementById("stage-header-9");
+  if (body9 !== null && body9.classList.contains("collapsed") === true) {
+    body9.classList.remove("collapsed");
+    if (header9 !== null) {
+      header9.setAttribute("aria-expanded", "true");
+    }
+  }
+  const section9 = document.getElementById("stage-section-9");
+  if (section9 !== null && typeof section9.scrollIntoView === "function") {
+    section9.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   let isStage2Done = appState.stageStatus[2] === "done";
   const spySeries = appState.priceCache["SPY"] || [];
   const isSpySufficient = Array.isArray(spySeries) === true && spySeries.length >= 500;
-  const eligibleConstituents = (appState.selectedTickers || []).filter((t) => {
-    return t !== "SPY" && Array.isArray(appState.priceCache[t]) === true && appState.priceCache[t].length >= 500;
-  });
-  const minBreadth = appState.settings.minimumBreadth || 5;
 
   // If Stage 2 was not explicitly marked done but price history was loaded, auto-align on the fly
-  if (isStage2Done === false && isSpySufficient === true && eligibleConstituents.length >= minBreadth) {
+  if (isStage2Done === false && isSpySufficient === true) {
     try {
       alignAndCompleteStage2();
       isStage2Done = appState.stageStatus[2] === "done";
@@ -12793,20 +12805,72 @@ export function startBacktest() {
     }
   }
 
-  if (isStage2Done === false) {
-    showStage9Alert("Stage 2 price history must be fetched before running backtest. Note: Stage 9 runs independently of Stage 8.", "error");
+  if (isStage2Done === false || isSpySufficient === false) {
+    showStage9Alert("Historical price data with at least 500 trading sessions for SPY and constituents is required before running backtest. Please click 'Fetch & Align Prices' in Stage 2.", "error");
+    const body2 = document.getElementById("stage-body-2");
+    if (body2 !== null) {
+      body2.classList.remove("collapsed");
+    }
     return;
   }
 
-  if (isSpySufficient === false) {
-    showStage9Alert(`SPY has ${spySeries.length} sessions. At least 500 sessions are required for the backtest benchmark.`, "error");
-    return;
+  // If Stage 6 has not run yet, auto-evaluate pure stages through Stage 6
+  if (appState.stageStatus[6] !== "done") {
+    try {
+      if (appState.stageStatus[3] !== "done") {
+        computeReturnsAndCovariance();
+      }
+      if (appState.stageStatus[4] !== "done") {
+        runStage4Screen();
+      }
+      if (appState.stageStatus[5] !== "done") {
+        applyTextGate();
+      }
+      if (appState.stageStatus[6] !== "done") {
+        runStage6Optimization();
+      }
+    } catch (pipelineErr) {
+      console.warn("Auto-evaluating pure stages before backtest:", pipelineErr);
+    }
   }
 
-  if (eligibleConstituents.length < minBreadth) {
-    showStage9Alert(`Fewer than minimum breadth (${minBreadth}) constituents have at least 500 sessions (${eligibleConstituents.length} eligible).`, "error");
-    return;
+  // Obtain selected constituents at Step 6
+  let candidateTickers = [];
+  if (appState.weights && Array.isArray(appState.weights.tickers) && appState.weights.tickers.length > 0) {
+    candidateTickers = [...appState.weights.tickers];
+  } else if (Array.isArray(appState.gatedSurvivors) && appState.gatedSurvivors.length > 0) {
+    candidateTickers = [...appState.gatedSurvivors];
+  } else if (appState.screenResult && Array.isArray(appState.screenResult.survivors) && appState.screenResult.survivors.length > 0) {
+    candidateTickers = [...appState.screenResult.survivors];
+  } else {
+    candidateTickers = (appState.selectedTickers || []).filter((t) => t !== "SPY");
   }
+
+  // Ensure constituents have at least 500 sessions
+  let eligibleConstituents = candidateTickers.filter((t) => {
+    return t !== "SPY" && Array.isArray(appState.priceCache[t]) === true && appState.priceCache[t].length >= 500;
+  });
+
+  if (eligibleConstituents.length === 0) {
+    const allEligible = (appState.selectedTickers || []).filter((t) => {
+      return t !== "SPY" && Array.isArray(appState.priceCache[t]) === true && appState.priceCache[t].length >= 500;
+    });
+    if (allEligible.length > 0) {
+      eligibleConstituents = allEligible;
+    } else {
+      showStage9Alert("None of the Step 6 constituents have the required 500 trading sessions in price history.", "error");
+      return;
+    }
+  }
+
+  const effectiveMinBreadth = Math.min(
+    appState.settings.minimumBreadth || 5,
+    Math.max(1, eligibleConstituents.length)
+  );
+  const effectiveWeightCap = Math.max(
+    appState.settings.weightCap || 0.25,
+    1 / Math.max(1, eligibleConstituents.length)
+  );
 
   clearStage9Alert();
   setStageStatus(9, "running");
@@ -12829,18 +12893,18 @@ export function startBacktest() {
   }
   const pText = document.getElementById("backtest-progress-text");
   if (pText !== null) {
-    pText.textContent = "0% (evaluating entry dates...)";
+    pText.textContent = `0% (evaluating ${eligibleConstituents.length} Step 6 constituents: ${eligibleConstituents.join(", ")})...`;
   }
 
   const payload = {
     priceCache: appState.priceCache,
-    selectedTickers: appState.selectedTickers,
+    selectedTickers: eligibleConstituents,
     universe: appState.universe,
     settings: {
       rsiThreshold: appState.settings.rsiThreshold,
       histogramLookback: appState.settings.histogramLookback,
-      weightCap: appState.settings.weightCap,
-      minimumBreadth: appState.settings.minimumBreadth,
+      weightCap: effectiveWeightCap,
+      minimumBreadth: effectiveMinBreadth,
       holdingPeriod: appState.settings.holdingPeriod || 20,
       exitThreshold: appState.settings.exitThreshold || 60,
       cadence: appState.settings.cadence || 5
@@ -12856,12 +12920,12 @@ export function startBacktest() {
     renderStage9UI();
 
     // Expand stage 9 section
-    const body9 = document.getElementById("stage-body-9");
-    const header9 = document.getElementById("stage-header-9");
-    if (body9 !== null && body9.classList.contains("collapsed") === true) {
-      body9.classList.remove("collapsed");
-      if (header9 !== null) {
-        header9.setAttribute("aria-expanded", "true");
+    const b9 = document.getElementById("stage-body-9");
+    const h9 = document.getElementById("stage-header-9");
+    if (b9 !== null && b9.classList.contains("collapsed") === true) {
+      b9.classList.remove("collapsed");
+      if (h9 !== null) {
+        h9.setAttribute("aria-expanded", "true");
       }
     }
   };
@@ -12870,6 +12934,7 @@ export function startBacktest() {
     cleanUpBacktestWorker();
     setStageStatus(9, appState.backtest !== null ? "done" : "idle");
     showStage9Alert(`Backtest simulation failed: ${errMessage}`, "error");
+    renderStage9UI();
   };
 
   const runDirectFallback = async () => {
@@ -12947,34 +13012,20 @@ export function renderStage9UI() {
     return;
   }
 
-  // Synchronize pre-flight conditions on Run button
+  // Synchronize Run button
   const runBtn = document.getElementById("btn-run-backtest");
-  const isStage2Done = appState.stageStatus[2] === "done";
-  const spySeries = appState.priceCache["SPY"] || [];
-  const isSpySufficient = Array.isArray(spySeries) === true && spySeries.length >= 500;
-  const eligibleConstituents = (appState.selectedTickers || []).filter((t) => {
-    return t !== "SPY" && Array.isArray(appState.priceCache[t]) === true && appState.priceCache[t].length >= 500;
-  });
-  const minBreadth = appState.settings.minimumBreadth || 5;
-  const hasConstituents = eligibleConstituents.length >= minBreadth;
-  const hasPriceData = isSpySufficient === true && hasConstituents === true;
+  const isRunning = appState.stageStatus[9] === "running";
 
   if (runBtn !== null) {
-    if (appState.stageStatus[9] === "running") {
+    if (isRunning === true) {
       runBtn.disabled = true;
       runBtn.title = "Backtest simulation in progress...";
-    } else if (isStage2Done === false && hasPriceData === false) {
-      runBtn.disabled = true;
-      runBtn.title = "Stage 2 price alignment must complete before running backtest.";
-    } else if (isSpySufficient === false) {
-      runBtn.disabled = true;
-      runBtn.title = `SPY has ${spySeries.length} sessions (minimum 500 required for backtest benchmark).`;
-    } else if (hasConstituents === false) {
-      runBtn.disabled = true;
-      runBtn.title = `Fewer than minimum breadth (${minBreadth}) constituents have 500 sessions.`;
+      runBtn.textContent = "Running backtest...";
     } else {
+      // The button is ACTIONABLE!
       runBtn.disabled = false;
-      runBtn.title = "Run walk-forward backtest simulation (operates independently of Stage 8)";
+      runBtn.title = "Run walk-forward backtest simulation on selected constituents at Step 6";
+      runBtn.textContent = "Run backtest";
     }
   }
 
