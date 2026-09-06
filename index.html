@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GenAI Finance App — Apple Style</title>
+  <title>GenAI Finance App: Portfolio Pipeline</title>
+  <meta name="description" content="Eight-stage quantitative portfolio pipeline with real-time stage tracking and in-memory state architecture." />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -11,93 +12,236 @@
   <header class="apple-nav">
     <div class="nav-content">
       <div class="nav-brand">
-        <svg class="apple-icon" viewBox="0 0 170 170" width="18" height="18" fill="currentColor">
+        <svg class="apple-icon" viewBox="0 0 170 170" width="18" height="18" fill="currentColor" aria-hidden="true">
           <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.8.12-9.66-1.92-14.58-6.12-3.32-2.83-7.23-7.55-11.75-14.16-6.12-8.92-11.05-18.73-14.79-29.43-3.74-10.7-5.61-21.32-5.61-31.86 0-15.15 3.8-27.42 11.4-36.81 7.6-9.39 17.2-14.16 28.8-14.31 4.58 0 9.66 1.15 15.24 3.45 5.58 2.3 9.4 3.45 11.46 3.45 1.83 0 5.8-1.2 11.91-3.6 6.11-2.4 11.2-3.5 15.27-3.3 10.9.48 19.64 4.26 26.22 11.34-9.87 5.96-14.72 14.31-14.55 25.05.18 8.44 3.38 15.48 9.6 21.12 6.22 5.64 13.78 8.78 22.68 9.42-2.12 6.27-4.8 12.37-8.04 18.3zm-27.3-102.6c0 6.64-2.43 12.98-7.29 19.02-5.11 6.28-11.45 9.87-19.02 10.77-.18-1.08-.27-2.07-.27-2.97 0-6.64 2.52-13.08 7.56-19.32 2.52-3.12 5.72-5.71 9.6-7.77 3.88-2.06 7.74-3.18 11.58-3.36.18 1.2.27 2.25.27 3.15z"/>
         </svg>
-        <span class="nav-title">GenAI Finance</span>
+        <span class="nav-title">Portfolio Pipeline</span>
       </div>
-      <div class="nav-badge">Studio Research</div>
+      <div class="nav-badge">8-Stage Engine</div>
     </div>
   </header>
 
+  <!-- Sticky Stage Tracker (Always Visible) -->
+  <aside class="tracker-sticky-bar" id="stage-tracker" aria-label="Pipeline Stage Tracker">
+    <div class="tracker-container">
+      <div class="tracker-top-meta">
+        <div class="tracker-caption">Pipeline Stage Tracker</div>
+        <div class="tracker-legend" aria-label="Status Legend">
+          <span class="legend-item"><span class="legend-swatch status-idle"></span>idle</span>
+          <span class="legend-item"><span class="legend-swatch status-running"></span>running</span>
+          <span class="legend-item"><span class="legend-swatch status-done"></span>done</span>
+          <span class="legend-item"><span class="legend-swatch status-stale"></span>stale</span>
+          <span class="legend-item"><span class="legend-swatch status-blocked"></span>blocked</span>
+        </div>
+      </div>
+      <nav class="tracker-steps-grid" id="tracker-steps-list" aria-label="Stages List">
+        <!-- Rendered dynamically by main.js with stage numbers, short names, and coloured status pills -->
+      </nav>
+    </div>
+  </aside>
+
+  <!-- Global Banner Area under the tracker -->
+  <div class="banner-area-wrapper" id="global-banners-wrapper">
+    <div class="banner-area-container" id="global-banners" role="region" aria-label="System Notifications">
+      <!-- Global warning and info banners rendered dynamically -->
+    </div>
+  </div>
+
   <main class="app-main">
     <!-- Hero Header -->
-    <section class="hero-section">
-      <h1 class="hero-title">Financial Intelligence.</h1>
-      <p class="hero-subtitle">Real-time ticker analysis paired with AI research synthesis.</p>
+    <section class="hero-section" id="hero-banner">
+      <h1 class="hero-title">Portfolio Pipeline.</h1>
+      <p class="hero-subtitle">Eight-stage quantitative pipeline with live stage tracking and session memory.</p>
     </section>
 
-    <!-- Interactive Config Panel -->
-    <section class="apple-card">
-      <form id="ticker-form" class="apple-form">
-        <div class="form-row">
-          <div class="form-group flex-1">
-            <label for="ticker" class="field-label">Stock Ticker</label>
-            <input id="ticker" name="ticker" type="text" placeholder="AAPL, MSFT, NVDA..." required autocomplete="off" value="AAPL" />
-          </div>
-          <div class="form-group preset-group">
-            <label class="field-label">&nbsp;</label>
-            <button type="button" id="btn-load-aapl-packet" class="apple-button secondary-btn">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px;">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="16" y1="13" x2="8" y2="13"></line>
-                <line x1="16" y1="17" x2="8" y2="17"></line>
-              </svg>
-              Load AAPL Packet
-            </button>
-          </div>
+    <!-- Stage 1 Section -->
+    <section class="stage-section" id="stage-section-1" data-stage="1">
+      <div class="stage-header" id="stage-header-1" role="button" tabindex="0" aria-expanded="true" aria-controls="stage-body-1">
+        <div class="stage-header-main">
+          <span class="stage-num-badge">1</span>
+          <h2 class="stage-title">Stage 1: Universe and settings</h2>
+          <span class="status-pill status-idle" id="stage-header-pill-1">idle</span>
         </div>
-
-        <div class="form-group">
-          <label for="twelvedata-key" class="field-label">Twelve Data API Key</label>
-          <input id="twelvedata-key" name="twelvedata-key" type="password" placeholder="Twelve Data key (or set VITE_TWELVEDATA_API_KEY)" />
-          <p class="field-hint">Covers US equities & ETFs (8 req/min free). Get a key at <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">twelvedata.com</a>.</p>
-        </div>
-
-        <div class="form-group">
-          <label for="openrouter-key" class="field-label">OpenRouter API Key</label>
-          <input id="openrouter-key" name="openrouter-key" type="password" placeholder="sk-or-... (or set VITE_OPENROUTER_API_KEY)" />
-          <p class="field-hint">Required for GenAI market research synthesis and sentiment analysis.</p>
-        </div>
-
-        <div class="packet-toggle-container">
-          <button type="button" id="toggle-packet-btn" class="text-link-btn">
-            <span id="packet-toggle-icon">▸</span> Optional: Include / Edit Research Packet JSON
-          </button>
-        </div>
-
-        <div id="packet-drawer" class="packet-drawer hidden">
-          <div class="form-group">
-            <label for="packet-json" class="field-label">Research Packet (JSON Context, Sentiment & Facts)</label>
-            <textarea id="packet-json" rows="6" placeholder='Paste earnings packet JSON here, or click "Load AAPL Packet" above...'></textarea>
-            <p class="field-hint">When provided, the LLM will analyze this exact research packet under strict equity analyst rules.</p>
-          </div>
-        </div>
-
-        <div class="form-actions">
-          <button type="submit" class="apple-button">Analyze Market & Sentiment</button>
-        </div>
-      </form>
-    </section>
-
-    <!-- Results Panel -->
-    <section class="apple-card results-card" id="results">
-      <div class="placeholder-state">
-        <div class="placeholder-icon">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+        <div class="stage-header-right">
+          <svg class="stage-chevron" id="stage-chevron-1" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
           </svg>
         </div>
-        <h3 class="placeholder-title">Ready for Analysis</h3>
-        <p class="placeholder-text">Enter a ticker above to fetch market data and generate AI research notes.</p>
+      </div>
+      <div class="stage-body" id="stage-body-1">
+        <div class="stage-content" id="stage-content-1">
+          <div class="stage-placeholder">
+            <p class="placeholder-text">Stage 1: Universe and settings controls will be rendered here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stage 2 Section -->
+    <section class="stage-section" id="stage-section-2" data-stage="2">
+      <div class="stage-header" id="stage-header-2" role="button" tabindex="0" aria-expanded="true" aria-controls="stage-body-2">
+        <div class="stage-header-main">
+          <span class="stage-num-badge">2</span>
+          <h2 class="stage-title">Stage 2: Price history</h2>
+          <span class="status-pill status-idle" id="stage-header-pill-2">idle</span>
+        </div>
+        <div class="stage-header-right">
+          <svg class="stage-chevron" id="stage-chevron-2" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+      <div class="stage-body" id="stage-body-2">
+        <div class="stage-content" id="stage-content-2">
+          <div class="stage-placeholder">
+            <p class="placeholder-text">Stage 2: Price history controls will be rendered here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stage 3 Section -->
+    <section class="stage-section" id="stage-section-3" data-stage="3">
+      <div class="stage-header" id="stage-header-3" role="button" tabindex="0" aria-expanded="true" aria-controls="stage-body-3">
+        <div class="stage-header-main">
+          <span class="stage-num-badge">3</span>
+          <h2 class="stage-title">Stage 3: Indicators</h2>
+          <span class="status-pill status-idle" id="stage-header-pill-3">idle</span>
+        </div>
+        <div class="stage-header-right">
+          <svg class="stage-chevron" id="stage-chevron-3" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+      <div class="stage-body" id="stage-body-3">
+        <div class="stage-content" id="stage-content-3">
+          <div class="stage-placeholder">
+            <p class="placeholder-text">Stage 3: Indicators controls will be rendered here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stage 4 Section -->
+    <section class="stage-section" id="stage-section-4" data-stage="4">
+      <div class="stage-header" id="stage-header-4" role="button" tabindex="0" aria-expanded="true" aria-controls="stage-body-4">
+        <div class="stage-header-main">
+          <span class="stage-num-badge">4</span>
+          <h2 class="stage-title">Stage 4: Technical screen</h2>
+          <span class="status-pill status-idle" id="stage-header-pill-4">idle</span>
+        </div>
+        <div class="stage-header-right">
+          <svg class="stage-chevron" id="stage-chevron-4" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+      <div class="stage-body" id="stage-body-4">
+        <div class="stage-content" id="stage-content-4">
+          <div class="stage-placeholder">
+            <p class="placeholder-text">Stage 4: Technical screen controls will be rendered here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stage 5 Section -->
+    <section class="stage-section" id="stage-section-5" data-stage="5">
+      <div class="stage-header" id="stage-header-5" role="button" tabindex="0" aria-expanded="true" aria-controls="stage-body-5">
+        <div class="stage-header-main">
+          <span class="stage-num-badge">5</span>
+          <h2 class="stage-title">Stage 5: Text gate</h2>
+          <span class="status-pill status-idle" id="stage-header-pill-5">idle</span>
+        </div>
+        <div class="stage-header-right">
+          <svg class="stage-chevron" id="stage-chevron-5" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+      <div class="stage-body" id="stage-body-5">
+        <div class="stage-content" id="stage-content-5">
+          <div class="stage-placeholder">
+            <p class="placeholder-text">Stage 5: Text gate controls will be rendered here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stage 6 Section -->
+    <section class="stage-section" id="stage-section-6" data-stage="6">
+      <div class="stage-header" id="stage-header-6" role="button" tabindex="0" aria-expanded="true" aria-controls="stage-body-6">
+        <div class="stage-header-main">
+          <span class="stage-num-badge">6</span>
+          <h2 class="stage-title">Stage 6: Minimum variance</h2>
+          <span class="status-pill status-idle" id="stage-header-pill-6">idle</span>
+        </div>
+        <div class="stage-header-right">
+          <svg class="stage-chevron" id="stage-chevron-6" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+      <div class="stage-body" id="stage-body-6">
+        <div class="stage-content" id="stage-content-6">
+          <div class="stage-placeholder">
+            <p class="placeholder-text">Stage 6: Minimum variance controls will be rendered here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stage 7 Section -->
+    <section class="stage-section" id="stage-section-7" data-stage="7">
+      <div class="stage-header" id="stage-header-7" role="button" tabindex="0" aria-expanded="true" aria-controls="stage-body-7">
+        <div class="stage-header-main">
+          <span class="stage-num-badge">7</span>
+          <h2 class="stage-title">Stage 7: Guardrails and review</h2>
+          <span class="status-pill status-idle" id="stage-header-pill-7">idle</span>
+        </div>
+        <div class="stage-header-right">
+          <svg class="stage-chevron" id="stage-chevron-7" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+      <div class="stage-body" id="stage-body-7">
+        <div class="stage-content" id="stage-content-7">
+          <div class="stage-placeholder">
+            <p class="placeholder-text">Stage 7: Guardrails and review controls will be rendered here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stage 8 Section -->
+    <section class="stage-section" id="stage-section-8" data-stage="8">
+      <div class="stage-header" id="stage-header-8" role="button" tabindex="0" aria-expanded="true" aria-controls="stage-body-8">
+        <div class="stage-header-main">
+          <span class="stage-num-badge">8</span>
+          <h2 class="stage-title">Stage 8: Portfolio and note</h2>
+          <span class="status-pill status-idle" id="stage-header-pill-8">idle</span>
+        </div>
+        <div class="stage-header-right">
+          <svg class="stage-chevron" id="stage-chevron-8" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+      <div class="stage-body" id="stage-body-8">
+        <div class="stage-content" id="stage-content-8">
+          <div class="stage-placeholder">
+            <p class="placeholder-text">Stage 8: Portfolio and note controls will be rendered here.</p>
+          </div>
+        </div>
       </div>
     </section>
   </main>
 
   <footer class="apple-footer">
     <div class="footer-content">
-      <p>Designed with Apple-inspired precision. Powered by Twelve Data & OpenRouter.</p>
+      <p>Eight-Stage Portfolio Pipeline. In-memory session execution.</p>
     </div>
   </footer>
 

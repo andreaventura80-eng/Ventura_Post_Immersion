@@ -1,6 +1,6 @@
 {
   "name": "GenAI Finance App",
-  "description": "Financial research SPA template with stock ticker analysis, Twelve Data price history, and AI research notes.",
+  "description": "Eight-stage quantitative portfolio pipeline with real-time stage tracking and in-memory state architecture.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
