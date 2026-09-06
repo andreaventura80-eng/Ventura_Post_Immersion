@@ -6605,6 +6605,15 @@ export async function runStage5Pipeline(forceRefresh = false) {
   if (canReuseCachedLabels === true) {
     applyTextGate();
     renderStage5UI();
+    const failures = evaluateGuardrails();
+    const guardrailsPass = failures.length === 0;
+    if (guardrailsPass === true) {
+      try {
+        await generateNote();
+      } catch (noteErr) {
+        console.warn("Pipeline note generation error:", noteErr);
+      }
+    }
     return true;
   }
 
@@ -6720,6 +6729,17 @@ export async function runStage5Pipeline(forceRefresh = false) {
   // Step 4: Apply qualitative text gate
   applyTextGate();
   renderStage5UI();
+
+  // Step 5: If guardrails pass, generate committee note (Call 2 of the run)
+  const failures = evaluateGuardrails();
+  const guardrailsPass = failures.length === 0;
+  if (guardrailsPass === true) {
+    try {
+      await generateNote();
+    } catch (noteErr) {
+      console.warn("Pipeline note generation error:", noteErr);
+    }
+  }
   return true;
 }
 
@@ -10461,38 +10481,525 @@ export function setupStage7() {
 }
 
 /**
- * Generates executive commentary note for Stage 8.
- *
- * @returns {Promise<boolean>}
+ * Thesis statement constant supplied verbatim.
+ * Defines the core qualitative mean-reversion recovery thesis for oversold S&P 500 constituents.
  */
-export async function generateNote() {
-  clearReview();
-  const inv = appState.settings.investmentAmount || 1000000;
-  const numSurvivors = Array.isArray(appState.gatedSurvivors) ? appState.gatedSurvivors.length : 0;
-  const betaVal = appState.beta && typeof appState.beta.currentBeta === "number" ? appState.beta.currentBeta.toFixed(2) : "N/A";
-  const sharpeVal = appState.metrics && appState.metrics.minVariance ? appState.metrics.minVariance.sharpe.toFixed(2) : "N/A";
+export const THESIS_STATEMENT = "Large-cap S&P 500 names that are oversold (RSI below 40) but show an early momentum turn (MACD histogram higher than three sessions ago) and are not facing a flagged macro headwind (text signal) are candidates for a mean-reversion recovery. Holding them as a minimum variance portfolio captures the rebound while limiting the drawdown risk that comes with buying weakness.";
 
-  const noteText = `The portfolio allocates $${inv.toLocaleString("en-US")} across ${numSurvivors} oversold turnaround candidates using minimum variance weighting. Portfolio rolling 60-day beta stands at ${betaVal} relative to SPY, and candidate Sharpe ratio is estimated at ${sharpeVal}. Quantitative guardrails and constituent risk headwinds have been evaluated for the committee record.`;
+/**
+ * System prompt instructing the language model to act as a concise financial analyst
+ * producing continuous prose without recomputing or inventing any figure.
+ */
+export const NOTE_SYSTEM_PROMPT = `You are a concise financial analyst writing a one-page plain English investment committee note.
+You explain the finished portfolio in plain language without recomputing or inventing any number.
+Every figure mentioned must appear verbatim in the input payload.
+The settings used govern wherever they differ from the thresholds named in the thesis statement.
+Every number must be written exactly as given, not rounded, not rescaled ("1,000,000", never "1 million"), and not spelled out in words.
 
-  appState.note = {
-    text: noteText,
-    investmentAmount: inv,
-    isStale: false,
-    timestamp: new Date().toISOString()
+The note follows a fixed four-part structure written in continuous prose mirroring the investor's screens:
+Part 1: Which names were kept and, in exclude mode, which Headwind names were dropped and why, or, in warn mode, which Headwind names were kept with a warning and why.
+Part 2: How weight was distributed, stating the investment amount and the largest dollar positions.
+Part 3: How minimum variance compares with the two benchmarks.
+Part 4: The two largest risks.
+
+Constraints:
+- Under 350 words total.
+- No bullet points, headings, or lists. Write continuous prose paragraphs.`;
+
+/**
+ * Builds the committee note data payload from application state using the shared display formatters.
+ * Every figure is formatted exactly as displayed on screen.
+ *
+ * @param {object} [state=appState]
+ * @returns {object} Note payload
+ */
+export function buildNotePayload(state = appState) {
+  const inv = typeof state.settings.investmentAmount === "number" ? state.settings.investmentAmount : 1000000;
+  const cap = typeof state.settings.weightCap === "number" ? state.settings.weightCap : 0.25;
+  const rf = typeof state.settings.riskFreeRate === "number" ? state.settings.riskFreeRate : 0.0391;
+  const gateMode = state.settings.gateMode || "exclude";
+
+  const settingsUsed = {
+    rsiThreshold: String(state.settings.baseRsiThreshold || state.settings.rsiThreshold || 40),
+    rsiCurrent: String(state.settings.rsiThreshold || 40),
+    rsiRelaxed: (state.settings.rsiRelaxCount || 0) > 0 ? "Yes" : "No",
+    rsiRelaxCount: String(state.settings.rsiRelaxCount || 0),
+    rsiRelaxationSummary: (state.settings.rsiRelaxCount || 0) > 0
+      ? `relaxed ${state.settings.rsiRelaxCount} time(s)`
+      : "not relaxed",
+    lookback: `${state.settings.histogramLookback || 3} sessions`,
+    histogramLookback: `${state.settings.histogramLookback || 3} sessions`,
+    cap: formatPercentage(cap),
+    weightCap: formatPercentage(cap),
+    sectorLimit: "50.00%",
+    gateMode: gateMode,
+    riskFreeRate: formatPercentage(rf)
   };
 
-  setStageStatus(8, "done");
-  renderStage8UI();
-  return true;
+  const hasAligned = state.alignedData !== null && typeof state.alignedData === "object";
+  const sessionCount = hasAligned === true && typeof state.alignedData.sessionCount === "number"
+    ? state.alignedData.sessionCount
+    : (hasAligned === true && Array.isArray(state.alignedData.dates) ? state.alignedData.dates.length : 250);
+
+  const alignedHistory = {
+    startDate: hasAligned === true && state.alignedData.startDate ? state.alignedData.startDate : "",
+    endDate: hasAligned === true && state.alignedData.endDate ? state.alignedData.endDate : "",
+    sessionCount: `${sessionCount} sessions`,
+    dateRange: (hasAligned === true && state.alignedData.startDate && state.alignedData.endDate)
+      ? `${state.alignedData.startDate} to ${state.alignedData.endDate}`
+      : ""
+  };
+
+  const signals = [];
+  const byTicker = state.screenResult && state.screenResult.byTicker ? state.screenResult.byTicker : {};
+  const screenTickers = Object.keys(byTicker);
+  for (let i = 0; i < screenTickers.length; i += 1) {
+    const sym = screenTickers[i];
+    const r = byTicker[sym];
+    const lbl = state.labels && state.labels[sym] ? state.labels[sym] : null;
+    const isGated = Array.isArray(state.gatedSurvivors) && state.gatedSurvivors.includes(sym);
+    const cleanReason = lbl && typeof lbl.reason === "string" ? lbl.reason.replace(/[0-9]/g, "").trim() : "";
+
+    signals.push({
+      ticker: sym,
+      oversold: r.isOversold === true ? "Pass" : "Fail",
+      rsi: typeof r.rsi === "number" ? formatTwoDecimals(r.rsi) : "N/A",
+      momentum: r.isMomentumTurn === true ? "Pass" : "Fail",
+      technicalScreen: r.passed === true ? "Pass" : "Fail",
+      textLabel: lbl ? lbl.label : "Unclassified",
+      textReason: cleanReason,
+      gateOutcome: isGated ? "Kept" : "Dropped"
+    });
+  }
+
+  const textLabels = [];
+  const headwindNames = [];
+  const screenSurvivors = state.screenResult && Array.isArray(state.screenResult.survivors)
+    ? state.screenResult.survivors
+    : (Array.isArray(state.gatedSurvivors) ? state.gatedSurvivors : []);
+
+  for (let i = 0; i < screenSurvivors.length; i += 1) {
+    const sym = screenSurvivors[i];
+    const lbl = state.labels && state.labels[sym] ? state.labels[sym] : null;
+    const labelVal = lbl ? lbl.label : "Unclassified";
+    const reasonVal = lbl && typeof lbl.reason === "string" ? lbl.reason.replace(/[0-9]/g, "").trim() : "";
+    const isGated = Array.isArray(state.gatedSurvivors) && state.gatedSurvivors.includes(sym);
+
+    let disposition = "";
+    if (labelVal === "Headwind") {
+      if (gateMode === "exclude") {
+        disposition = `Dropped due to flagged macro headwind: ${reasonVal}`;
+        headwindNames.push({ ticker: sym, status: "Dropped", reason: reasonVal });
+      } else {
+        disposition = `Kept with warning (warn mode active): ${reasonVal}`;
+        headwindNames.push({ ticker: sym, status: "Kept with warning", reason: reasonVal });
+      }
+    } else {
+      disposition = isGated ? "Kept in candidate portfolio" : "Excluded by gate";
+    }
+
+    textLabels.push({
+      ticker: sym,
+      label: labelVal,
+      reason: reasonVal,
+      gateMode: gateMode,
+      disposition: disposition
+    });
+  }
+
+  const methodKeys = ["minVariance", "equalWeight", "inverseVolatility"];
+  const weightsAndAllocations = {};
+  const survivors = Array.isArray(state.gatedSurvivors) ? state.gatedSurvivors : [];
+
+  for (let m = 0; m < methodKeys.length; m += 1) {
+    const mKey = methodKeys[m];
+    const wList = state.weights && Array.isArray(state.weights[mKey]) ? state.weights[mKey] : [];
+    const aList = state.weights && state.weights.allocations && Array.isArray(state.weights.allocations[mKey])
+      ? state.weights.allocations[mKey]
+      : (state.dollarAllocations && Array.isArray(state.dollarAllocations[mKey]) ? state.dollarAllocations[mKey] : []);
+
+    const positions = [];
+    let largestWeight = 0;
+    let largestDollar = 0;
+    let largestTicker = "";
+
+    for (let i = 0; i < survivors.length; i += 1) {
+      const sym = survivors[i];
+      const w = typeof wList[i] === "number" ? wList[i] : 0;
+      const a = typeof aList[i] === "number" ? aList[i] : Math.round(w * inv);
+      const uObj = Array.isArray(state.universe) ? state.universe.find((u) => u.ticker === sym) : null;
+      const sector = uObj ? uObj.sector : "Unknown Sector";
+
+      positions.push({
+        ticker: sym,
+        sector: sector,
+        weight: formatPercentage(w),
+        dollarAllocation: formatWholeDollars(a),
+        weightNum: w,
+        allocNum: a
+      });
+
+      if (w > largestWeight) {
+        largestWeight = w;
+        largestDollar = a;
+        largestTicker = sym;
+      }
+    }
+
+    positions.sort((a, b) => b.weightNum - a.weightNum);
+
+    weightsAndAllocations[mKey] = {
+      positions: positions.map((p) => ({
+        ticker: p.ticker,
+        sector: p.sector,
+        weight: p.weight,
+        dollarAllocation: p.dollarAllocation
+      })),
+      largestWeight: formatPercentage(largestWeight),
+      largestDollarPosition: formatWholeDollars(largestDollar),
+      largestPositionSummary: largestTicker ? `${largestTicker} at ${formatWholeDollars(largestDollar)} (${formatPercentage(largestWeight)})` : "None"
+    };
+  }
+
+  const portfolioMetrics = {};
+  for (let m = 0; m < methodKeys.length; m += 1) {
+    const mKey = methodKeys[m];
+    const met = state.metrics && state.metrics[mKey] ? state.metrics[mKey] : null;
+    portfolioMetrics[mKey] = {
+      methodName: mKey === "minVariance" ? "Minimum Variance (Candidate)" : (mKey === "equalWeight" ? "Equal Weight (Reference Benchmark)" : "Inverse Volatility (Reference Benchmark)"),
+      annualizedReturn: met && typeof met.annualizedReturn === "number" ? formatPercentage(met.annualizedReturn) : "N/A",
+      annualizedVolatility: met && typeof met.annualizedVolatility === "number" ? formatPercentage(met.annualizedVolatility) : "N/A",
+      sharpe: met && typeof met.sharpe === "number" ? formatSharpe(met.sharpe) : "N/A",
+      feasible: met && met.feasible !== undefined ? (met.feasible === true ? "Yes" : "No") : "Yes"
+    };
+  }
+
+  const sectorSummary = {};
+  const mvWeights = state.weights && Array.isArray(state.weights.minVariance) ? state.weights.minVariance : [];
+  const mvAllocs = state.weights && state.weights.allocations && Array.isArray(state.weights.allocations.minVariance)
+    ? state.weights.allocations.minVariance
+    : [];
+
+  for (let i = 0; i < survivors.length; i += 1) {
+    const sym = survivors[i];
+    const w = typeof mvWeights[i] === "number" ? mvWeights[i] : 0;
+    const a = typeof mvAllocs[i] === "number" ? mvAllocs[i] : Math.round(w * inv);
+    const uObj = Array.isArray(state.universe) ? state.universe.find((u) => u.ticker === sym) : null;
+    const sector = uObj ? uObj.sector : "Unknown Sector";
+
+    if (!sectorSummary[sector]) {
+      sectorSummary[sector] = { weight: 0, alloc: 0, tickers: [] };
+    }
+    sectorSummary[sector].weight += w;
+    sectorSummary[sector].alloc += a;
+    sectorSummary[sector].tickers.push(sym);
+  }
+
+  const sectorExposures = Object.keys(sectorSummary).map((sec) => ({
+    sector: sec,
+    totalWeight: formatPercentage(sectorSummary[sec].weight),
+    totalAllocation: formatWholeDollars(sectorSummary[sec].alloc),
+    within50PctLimit: sectorSummary[sec].weight <= 0.50 ? "Yes" : "No",
+    constituents: sectorSummary[sec].tickers.join(", ")
+  })).sort((a, b) => parseFloat(b.totalWeight) - parseFloat(a.totalWeight));
+
+  const betaObj = state.beta;
+  const isBetaAvail = betaObj !== null && typeof betaObj === "object" && betaObj.available === true && typeof betaObj.current === "number";
+  const betaCurrentStr = isBetaAvail === true
+    ? formatBeta(betaObj.current)
+    : (betaObj && typeof betaObj.currentBeta === "number" ? formatBeta(betaObj.currentBeta) : "Unavailable");
+  const betaWindowStr = `${betaObj && betaObj.window ? betaObj.window : 60}-session window`;
+  const betaStatusStr = (betaObj && betaObj.available === false) ? (betaObj.reason || "SPY unavailable") : "Available";
+
+  const rollingBeta = {
+    currentBeta: betaCurrentStr,
+    window: betaWindowStr,
+    benchmark: "SPY",
+    status: betaStatusStr
+  };
+
+  const payload = {
+    thesisStatement: THESIS_STATEMENT,
+    investmentAmount: formatWholeDollars(inv),
+    investmentAmountPlain: inv.toLocaleString("en-US"),
+    investmentAmountRaw: `${inv.toLocaleString("en-US")} USD`,
+    settingsUsed: settingsUsed,
+    alignedDateRange: alignedHistory,
+    perTickerSignals: signals,
+    textLabels: textLabels,
+    headwindNames: headwindNames,
+    weightsAndAllocations: weightsAndAllocations,
+    portfolioMetrics: portfolioMetrics,
+    sectorConcentration: sectorExposures,
+    rollingBeta: rollingBeta
+  };
+
+  state.notePayload = payload;
+  return payload;
 }
 
 /**
- * Regenerates the investment note.
+ * Executes prompt 20 post-check validation on the received committee note.
+ * Verifies word count, absence of lists/headings, and verbatim figure compliance.
  *
+ * @param {string} noteText - Prose note text returned by the model
+ * @param {object} [payload=appState.notePayload] - Stored note payload
+ * @returns {{passed: boolean, failures: string[], wordCount: number, evaluatedAt: string}}
+ */
+export function runNotePostCheck(noteText, payload = appState.notePayload) {
+  const failures = [];
+
+  const isString = typeof noteText === "string";
+  if (isString === false || noteText.trim().length === 0 || noteText === "Note unavailable") {
+    return {
+      passed: false,
+      failures: ["Note is unavailable or empty."],
+      wordCount: 0,
+      evaluatedAt: new Date().toISOString()
+    };
+  }
+
+  const trimmed = noteText.trim();
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+
+  // 1. Under 350 words constraint
+  const isUnder350 = wordCount <= 350;
+  if (isUnder350 === false) {
+    failures.push(`Note exceeds 350 words limit (${wordCount} words).`);
+  }
+
+  // 2. Structural constraint: no bullet points, headings, or lists
+  const hasListsOrHeadings = /(?:^|\n)\s*(?:[*•\-]|\d+\.|\#{1,6})\s+/m.test(trimmed);
+  if (hasListsOrHeadings === true) {
+    failures.push("Note contains prohibited bullet points, numbered lists, or markdown headings.");
+  }
+
+  // 3. Verbatim figures constraint: all numbers in note must appear in payload or thesis
+  const payloadStr = payload ? JSON.stringify(payload) : "";
+  const thesisStr = THESIS_STATEMENT;
+
+  const numberTokens = trimmed.match(/\$?\b\d[\d,]*(?:\.\d+)?%?/g) || [];
+  for (let i = 0; i < numberTokens.length; i += 1) {
+    const token = numberTokens[i];
+    const cleanToken = token.replace(/[.,;:]$/, "");
+    const rawDigits = cleanToken.replace(/[$,%]/g, "");
+
+    const inPayload = payloadStr.includes(cleanToken) === true || payloadStr.includes(rawDigits) === true;
+    const inThesis = thesisStr.includes(cleanToken) === true || thesisStr.includes(rawDigits) === true;
+
+    const isVerified = inPayload === true || inThesis === true;
+    if (isVerified === false) {
+      failures.push(`Figure "${cleanToken}" does not appear verbatim in input payload or thesis.`);
+    }
+  }
+
+  const passed = failures.length === 0;
+  return {
+    passed: passed,
+    failures: failures,
+    wordCount: wordCount,
+    evaluatedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Generates executive committee note for Stage 8 using OpenRouter call 2.
+ * Temperature 0, 30s timeout, 1 retry, following a strict four-part continuous prose structure.
+ *
+ * @param {object} [state=appState]
+ * @param {boolean} [isRegenerate=false]
  * @returns {Promise<boolean>}
  */
-export async function regenerateNote() {
-  return generateNote();
+export async function generateNote(state = appState, isRegenerate = false) {
+  clearReview();
+
+  // Guardrail check: Note is NEVER generated while the guardrail stage reports any failure
+  const failures = evaluateGuardrails(state);
+  const guardrailsPass = failures.length === 0;
+  if (guardrailsPass === false) {
+    console.warn("generateNote aborted: guardrails failing.", failures);
+    setStageStatus(8, "blocked");
+    renderStage8UI();
+    return false;
+  }
+
+  const hasWeights = state.weights !== null && Array.isArray(state.weights.minVariance) === true && state.weights.minVariance.length > 0;
+  if (hasWeights === false) {
+    setStageStatus(8, "idle");
+    renderStage8UI();
+    return false;
+  }
+
+  // Build payload and store in state
+  const payload = buildNotePayload(state);
+
+  const apiKey = (state.keys.openRouter || "").trim();
+  const hasApiKey = apiKey.length > 0;
+  if (hasApiKey === false) {
+    state.note = {
+      text: "Note unavailable",
+      error: "OpenRouter API Key field in Settings is missing. Please enter your API key in Settings.",
+      investmentAmount: state.settings.investmentAmount || 1000000,
+      isStale: false,
+      timestamp: new Date().toISOString()
+    };
+    state.notePostCheck = {
+      passed: false,
+      reason: "OpenRouter API key missing",
+      failures: ["OpenRouter API key missing"],
+      wordCount: 0,
+      evaluatedAt: new Date().toISOString()
+    };
+    setStageStatus(8, "done");
+    renderStage8UI();
+    return false;
+  }
+
+  setStageStatus(8, "running");
+  renderStage8UI();
+
+  const modelId = (state.settings.openRouterModel || DEFAULT_OPENROUTER_MODEL).trim();
+  const userContent = `${THESIS_STATEMENT}\n\nPORTFOLIO DATA PAYLOAD:\n${JSON.stringify(payload, null, 2)}`;
+
+  const requestPayload = {
+    model: modelId,
+    temperature: 0,
+    messages: [
+      { role: "system", content: NOTE_SYSTEM_PROMPT },
+      { role: "user", content: userContent }
+    ]
+  };
+
+  const fetchOptions = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://ai.studio/",
+      "X-Title": "Momentum Value Asset Allocation"
+    },
+    body: JSON.stringify(requestPayload)
+  };
+
+  const attemptFetch = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
+    try {
+      const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        ...fetchOptions,
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      return resp;
+    } catch (err) {
+      clearTimeout(timer);
+      throw err;
+    }
+  };
+
+  let response;
+  let fetchFailed = false;
+  let failureMessage = "";
+
+  try {
+    try {
+      response = await attemptFetch();
+      const isOk = response.ok === true;
+      if (isOk === false) {
+        throw new Error(`OpenRouter returned HTTP ${response.status}`);
+      }
+    } catch (firstErr) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      response = await attemptFetch();
+      const retryOk = response.ok === true;
+      if (retryOk === false) {
+        throw new Error(`OpenRouter returned HTTP ${response.status} on retry`);
+      }
+    }
+  } catch (err) {
+    fetchFailed = true;
+    failureMessage = err.message || String(err);
+  }
+
+  if (fetchFailed === true) {
+    state.note = {
+      text: "Note unavailable",
+      error: failureMessage,
+      investmentAmount: state.settings.investmentAmount || 1000000,
+      isStale: false,
+      timestamp: new Date().toISOString()
+    };
+    state.notePostCheck = {
+      passed: false,
+      reason: failureMessage,
+      failures: [failureMessage],
+      wordCount: 0,
+      evaluatedAt: new Date().toISOString()
+    };
+    setStageStatus(8, "done");
+    renderStage8UI();
+    return false;
+  }
+
+  try {
+    const data = await response.json();
+    const hasChoices = data && Array.isArray(data.choices) === true && data.choices.length > 0;
+    const choice = hasChoices === true ? data.choices[0] : null;
+    const noteContent = choice && choice.message && typeof choice.message.content === "string"
+      ? choice.message.content.trim()
+      : "";
+
+    const hasContent = noteContent.length > 0;
+    if (hasContent === false) {
+      throw new Error("OpenRouter returned empty note content");
+    }
+
+    state.note = {
+      text: noteContent,
+      error: null,
+      investmentAmount: state.settings.investmentAmount || 1000000,
+      isStale: false,
+      timestamp: new Date().toISOString()
+    };
+
+    const postCheckResult = runNotePostCheck(noteContent, payload);
+    state.notePostCheck = postCheckResult;
+
+    setStageStatus(8, "done");
+    renderStage8UI();
+    return true;
+  } catch (parseErr) {
+    state.note = {
+      text: "Note unavailable",
+      error: parseErr.message || String(parseErr),
+      investmentAmount: state.settings.investmentAmount || 1000000,
+      isStale: false,
+      timestamp: new Date().toISOString()
+    };
+    state.notePostCheck = {
+      passed: false,
+      reason: parseErr.message || String(parseErr),
+      failures: [parseErr.message || String(parseErr)],
+      wordCount: 0,
+      evaluatedAt: new Date().toISOString()
+    };
+    setStageStatus(8, "done");
+    renderStage8UI();
+    return false;
+  }
+}
+
+/**
+ * Regenerates the investment note with the latest parameters.
+ * Clears review and performs a single network request to OpenRouter.
+ *
+ * @param {object} [state=appState]
+ * @returns {Promise<boolean>}
+ */
+export async function regenerateNote(state = appState) {
+  clearReview();
+  return generateNote(state, true);
 }
 
 /**
@@ -10912,6 +11419,7 @@ export function renderStage8UI() {
   // 6. Note stale alert & body
   const staleAlert = document.getElementById("stage-8-note-stale-alert");
   const noteBody = document.getElementById("stage-8-note-body");
+  const noteBadge = document.getElementById("stage-8-note-status-badge");
 
   const noteIsStale = appState.note !== null && (appState.note.isStale === true || appState.note.investmentAmount !== appState.settings.investmentAmount);
 
@@ -10925,9 +11433,37 @@ export function renderStage8UI() {
 
   if (noteBody !== null) {
     if (appState.note !== null && typeof appState.note.text === "string") {
-      noteBody.textContent = appState.note.text;
+      const isUnavailable = appState.note.text === "Note unavailable";
+      if (isUnavailable === true) {
+        const errorDetail = appState.note.error
+          ? `<div class="stage-8-note-error-msg font-medium mb-2 text-danger" id="stage-8-note-error-msg">Call failure: ${escapeHtml(appState.note.error)}</div>`
+          : "";
+        noteBody.innerHTML = `
+          ${errorDetail}
+          <p class="stage-8-note-unavailable-msg text-secondary" id="stage-8-note-unavailable-msg">Note unavailable. Press "Regenerate note" to attempt another call.</p>
+        `;
+        if (noteBadge !== null) {
+          noteBadge.textContent = "Unavailable";
+          noteBadge.className = "badge status-blocked";
+        }
+      } else {
+        const paragraphs = appState.note.text.split(/\n\n+/).filter(Boolean);
+        if (paragraphs.length > 1) {
+          noteBody.innerHTML = paragraphs.map((p, idx) => `<p class="stage-8-note-paragraph mb-3" id="stage-8-note-p-${idx}">${escapeHtml(p.trim())}</p>`).join("");
+        } else {
+          noteBody.textContent = appState.note.text;
+        }
+        if (noteBadge !== null) {
+          noteBadge.textContent = "Ready";
+          noteBadge.className = "badge badge-status-pass";
+        }
+      }
     } else {
-      noteBody.textContent = "Note unavailable. Press 'Regenerate note' to compose executive commentary.";
+      noteBody.innerHTML = `<p class="stage-8-note-placeholder-msg text-secondary">Stage 8: Portfolio allocations and investment note will be rendered here.</p>`;
+      if (noteBadge !== null) {
+        noteBadge.textContent = "Pending";
+        noteBadge.className = "badge";
+      }
     }
   }
 
@@ -10967,6 +11503,37 @@ export function setupStage8() {
   if (btnRegenNote !== null) {
     btnRegenNote.onclick = async () => {
       await regenerateNote();
+    };
+  }
+
+  const btnCopyNote = document.getElementById("btn-copy-note");
+  if (btnCopyNote !== null) {
+    btnCopyNote.onclick = async () => {
+      const noteText = appState.note && typeof appState.note.text === "string" ? appState.note.text : "";
+      const canCopy = noteText.length > 0 && noteText !== "Note unavailable";
+      if (canCopy === true) {
+        try {
+          if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+            await navigator.clipboard.writeText(noteText);
+          } else {
+            const ta = document.createElement("textarea");
+            ta.value = noteText;
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+          }
+          const prev = btnCopyNote.textContent;
+          btnCopyNote.textContent = "Copied!";
+          setTimeout(() => {
+            btnCopyNote.textContent = prev;
+          }, 2000);
+        } catch (copyErr) {
+          console.error("Failed to copy note text:", copyErr);
+        }
+      }
     };
   }
 
@@ -11113,6 +11680,12 @@ if (hasWindow === true) {
   window.generateBetaSvgChart = generateBetaSvgChart;
   window.renderStage8UI = renderStage8UI;
   window.setupStage8 = setupStage8;
+  window.THESIS_STATEMENT = THESIS_STATEMENT;
+  window.NOTE_SYSTEM_PROMPT = NOTE_SYSTEM_PROMPT;
+  window.buildNotePayload = buildNotePayload;
+  window.runNotePostCheck = runNotePostCheck;
+  window.generateNote = generateNote;
+  window.regenerateNote = regenerateNote;
   window.appState = appState;
   window.state = appState;
 }
@@ -11129,6 +11702,12 @@ if (typeof globalThis !== "undefined") {
   globalThis.generateBetaSvgChart = generateBetaSvgChart;
   globalThis.renderStage8UI = renderStage8UI;
   globalThis.setupStage8 = setupStage8;
+  globalThis.THESIS_STATEMENT = THESIS_STATEMENT;
+  globalThis.NOTE_SYSTEM_PROMPT = NOTE_SYSTEM_PROMPT;
+  globalThis.buildNotePayload = buildNotePayload;
+  globalThis.runNotePostCheck = runNotePostCheck;
+  globalThis.generateNote = generateNote;
+  globalThis.regenerateNote = regenerateNote;
 }
 
 export { appState as state };
