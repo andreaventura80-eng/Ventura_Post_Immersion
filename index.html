@@ -1100,6 +1100,22 @@
           </div>
           <div class="stage-container hidden" id="stage-7-container">
             <div id="guardrail-blocking-banner" class="alert alert-error hidden" role="alert">a survivor has no text label</div>
+
+            <!-- Blocked Card (rendered when any guardrail fails) -->
+            <div class="content-card blocked-card hidden" id="stage-7-blocked-card" role="alert">
+              <div class="content-card-header blocked-card-header">
+                <div class="blocked-header-info">
+                  <span class="status-pill status-blocked">blocked</span>
+                  <h3 class="card-title blocked-card-title">Portfolio Blocked by Quantitative Guardrails</h3>
+                </div>
+                <p class="card-subtitle blocked-card-subtitle">The engine has refused to hand over this portfolio. Review each failure cause, the setting that would fix it, and corresponding actions below.</p>
+              </div>
+              <div class="blocked-failures-list" id="stage-7-blocked-failures">
+                <!-- Failure items rendered dynamically with cause, fix, and action button -->
+              </div>
+            </div>
+
+            <!-- Guardrails Status Checklist Card -->
             <div class="content-card" id="stage-7-guardrails-card">
               <div class="content-card-header">
                 <div>
@@ -1119,9 +1135,21 @@
                 <label class="checkbox-container" id="guardrail-reviewed-label" for="guardrail-reviewed-checkbox">
                   <input type="checkbox" id="guardrail-reviewed-checkbox" />
                   <span class="checkbox-custom"></span>
-                  <span class="checkbox-label-text">I have reviewed the quantitative guardrails, sector allocations, and candidate portfolio.</span>
+                  <span class="checkbox-label-text">I have reviewed these numbers, the quantitative guardrails, sector allocations, and candidate portfolio.</span>
                 </label>
                 <span class="badge" id="guardrail-review-status">Unreviewed</span>
+              </div>
+            </div>
+
+            <!-- Stage 7 Actions Bar with Export Button -->
+            <div class="stage-actions-bar" id="stage-7-actions-bar">
+              <div class="stage-actions-left">
+                <span class="export-hint-text" id="stage-7-export-hint">Confirm review checkbox above to enable dated JSON export for the committee record.</span>
+              </div>
+              <div class="stage-actions-right">
+                <button type="button" class="btn btn-primary" id="btn-export-portfolio" disabled>
+                  Export Portfolio (.json)
+                </button>
               </div>
             </div>
           </div>
@@ -1192,7 +1220,7 @@
                 </button>
               </div>
               <div class="stage-actions-right">
-                <button type="button" class="btn btn-primary" id="btn-export-portfolio" disabled>
+                <button type="button" class="btn btn-primary" id="btn-stage-8-export-portfolio" disabled>
                   Export Portfolio
                 </button>
               </div>

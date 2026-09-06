@@ -4015,6 +4015,90 @@ tr.signal-drilldown-row td {
   margin-top: 14px;
 }
 
+/* Blocked Card Styles */
+.blocked-card {
+  background: #fff8f8;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  padding: 18px;
+  margin-bottom: 20px;
+}
+
+.blocked-card-header {
+  border-bottom: 1px solid #fee2e2;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+}
+
+.blocked-header-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.blocked-card-title {
+  color: #991b1b;
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.blocked-card-subtitle {
+  color: #7f1d1d;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.blocked-failures-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.blocked-failure-item {
+  background: #ffffff;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.blocked-failure-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.blocked-failure-cause {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #b91c1c;
+}
+
+.blocked-failure-fix {
+  font-size: 13px;
+  color: #4b5563;
+  line-height: 1.5;
+}
+
+.blocked-failure-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  margin-top: 4px;
+}
+
+.export-hint-text {
+  font-size: 12.5px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+
 
 
 

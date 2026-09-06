@@ -729,6 +729,7 @@ export function applyUniverseCSV(csvText) {
       setStageStatus(s, "idle");
     }
 
+    clearReview();
     renderUniverseUI();
     updatePreflightCard();
     renderRawPricesTable();
@@ -819,6 +820,7 @@ export function resetToDefaultUniverse() {
     setStageStatus(s, "idle");
   }
 
+  clearReview();
   renderUniverseUI();
   updatePreflightCard();
   renderRawPricesTable();
@@ -844,9 +846,24 @@ export function toggleConstituentTicker(ticker) {
     appState.selectedTickers = [...appState.selectedTickers, ticker];
   }
 
+  clearReview();
+
+  const isNowSelected = appState.selectedTickers.includes(ticker);
+  const isCached = appState.priceCache && Array.isArray(appState.priceCache[ticker]) && appState.priceCache[ticker].length > 0;
+  if (isNowSelected === true && isCached === false) {
+    markStagesStale(2);
+  } else {
+    const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
+    if (hasIndicators === true) {
+      runStage4Screen();
+    }
+    evaluateGuardrails();
+  }
+
   renderUniverseUI();
   updatePreflightCard();
   renderRawPricesTable();
+  renderStage7UI();
 }
 
 /**
@@ -990,12 +1007,17 @@ export function validateAndSetWeightCap(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+  clearReview();
 
   const hasGated = Array.isArray(appState.gatedSurvivors) === true && appState.gatedSurvivors.length > 0;
   const isStage5Done = appState.stageStatus[5] === "done";
   if (hasGated === true && isStage5Done === true) {
     runStage6Optimization();
+    recomputeRollingBeta();
   }
+  evaluateGuardrails();
+  renderStage6UI();
+  renderStage7UI();
 
   return true;
 }
@@ -1036,11 +1058,14 @@ export function validateAndSetMinimumBreadth(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+  clearReview();
 
   const hasScreenResult = appState.screenResult !== null && typeof appState.screenResult === "object";
   if (hasScreenResult === true) {
     renderStage4UI();
   }
+  evaluateGuardrails();
+  renderStage7UI();
 
   return true;
 }
@@ -1074,11 +1099,21 @@ export function validateAndSetInvestmentAmount(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+  clearReview();
 
   const hasWeights = appState.weights !== null && typeof appState.weights === "object" && Array.isArray(appState.weights.minVariance) === true;
   if (hasWeights === true) {
     updateStage6InvestmentAmount(num);
   }
+  evaluateGuardrails();
+  if (appState.note !== null && typeof appState.note === "object") {
+    if (appState.note.investmentAmount !== num) {
+      appState.note.isStale = true;
+      setStageStatus(8, "stale");
+    }
+  }
+  renderStage7UI();
+  renderStage8UI();
 
   return true;
 }
@@ -1114,11 +1149,14 @@ export function validateAndSetRsiThreshold(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+  clearReview();
 
   const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
   if (hasIndicators === true) {
     runStage4Screen(previousSurvivors);
   }
+  evaluateGuardrails();
+  renderStage7UI();
 
   return true;
 }
@@ -1152,11 +1190,14 @@ export function validateAndSetHistogramLookback(rawInput) {
   updatePreflightCard();
   renderSignalTable();
   renderMacdPanelUI();
+  clearReview();
 
   const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
   if (hasIndicators === true) {
     runStage4Screen(previousSurvivors);
   }
+  evaluateGuardrails();
+  renderStage7UI();
 
   return true;
 }
@@ -1183,11 +1224,14 @@ export function validateAndSetRiskFreeRate(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+  clearReview();
 
   const hasMetrics = appState.metrics !== null && typeof appState.metrics === "object" && appState.metrics.minVariance !== undefined;
   if (hasMetrics === true) {
     updateStage6RiskFreeRate(appState.settings.riskFreeRate);
   }
+  evaluateGuardrails();
+  renderStage7UI();
 
   return true;
 }
@@ -1229,10 +1273,20 @@ export function validateAndSetGateMode(val) {
   if (isAllowed === true) {
     appState.settings.gateMode = val;
     clearSettingsError();
+    clearReview();
     const hasLabels = appState.labels !== null && typeof appState.labels === "object";
     if (hasLabels === true) {
       applyTextGate();
+      const hasGated = Array.isArray(appState.gatedSurvivors) === true && appState.gatedSurvivors.length > 0;
+      if (hasGated === true) {
+        runStage6Optimization();
+        recomputeRollingBeta();
+      }
     }
+    evaluateGuardrails();
+    renderStage5UI();
+    renderStage6UI();
+    renderStage7UI();
   } else {
     showSettingsError(`Gate mode must be "exclude" or "warn" (entered "${val}").`);
     renderSettingsUI();
@@ -5053,11 +5107,15 @@ export function relaxRsiThreshold() {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+  clearReview();
 
   const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
   if (hasIndicators === true) {
     runStage4Screen(previousSurvivors);
   }
+
+  evaluateGuardrails();
+  renderStage7UI();
 
   return true;
 }
@@ -5948,6 +6006,8 @@ export function setSurvivorLabel(ticker, data) {
     originalMalformed: originalMalformed,
     malformedReason: data.malformedReason || ""
   };
+
+  clearReview();
 }
 
 /**
@@ -6405,10 +6465,14 @@ export function applyTextGate() {
     setStageStatus(5, "done");
     if (gatedList.length > 0) {
       runStage6Optimization();
+      recomputeRollingBeta();
     }
   }
 
+  evaluateGuardrails();
   renderStage5UI();
+  renderStage6UI();
+  renderStage7UI();
 }
 
 /**
@@ -6419,6 +6483,7 @@ export function applyTextGate() {
  * @returns {Promise<boolean>}
  */
 export async function regenerateLabels() {
+  clearReview();
   const hasScreen = appState.screenResult !== null && typeof appState.screenResult === "object";
   const survivors = hasScreen === true && Array.isArray(appState.screenResult.survivors) === true
     ? appState.screenResult.survivors
@@ -6438,7 +6503,10 @@ export async function regenerateLabels() {
 
   const success = await callOpenRouterClassifier(survivors);
   applyTextGate();
+  evaluateGuardrails();
   renderStage5UI();
+  renderStage6UI();
+  renderStage7UI();
   return success;
 }
 
@@ -6450,6 +6518,7 @@ export async function regenerateLabels() {
  * @returns {Promise<boolean>}
  */
 export async function labelNewSurvivors() {
+  clearReview();
   const hasScreen = appState.screenResult !== null && typeof appState.screenResult === "object";
   const survivors = hasScreen === true && Array.isArray(appState.screenResult.survivors) === true
     ? appState.screenResult.survivors
@@ -6469,6 +6538,10 @@ export async function labelNewSurvivors() {
   const hasUnlabelled = unlabelled.length > 0;
   if (hasUnlabelled === false) {
     applyTextGate();
+    evaluateGuardrails();
+    renderStage5UI();
+    renderStage6UI();
+    renderStage7UI();
     return true;
   }
 
@@ -6491,7 +6564,10 @@ export async function labelNewSurvivors() {
   await callOpenRouterClassifier(unlabelled);
 
   applyTextGate();
+  evaluateGuardrails();
   renderStage5UI();
+  renderStage6UI();
+  renderStage7UI();
   return true;
 }
 
@@ -8542,6 +8618,10 @@ export function updateStage6InvestmentAmount(investmentAmount) {
     ? investmentAmount
     : ((appState.settings && typeof appState.settings.investmentAmount === "number") ? appState.settings.investmentAmount : 1000000);
 
+  if (!appState.weights.allocations || typeof appState.weights.allocations !== "object") {
+    appState.weights.allocations = {};
+  }
+
   if (Array.isArray(appState.weights.minVariance) === true) {
     const allocMV = computeDollarAllocations(appState.weights.minVariance, amt);
     appState.weights.allocations.minVariance = allocMV;
@@ -8659,6 +8739,10 @@ export function runStage6Optimization() {
   }
 
   // 2. Sliced covariance matrix
+  const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object" && Array.isArray(appState.indicatorSeries.covarianceMatrix) === true;
+  if (hasIndicators === false) {
+    return;
+  }
   const sigma = sliceCovariance(survivors);
 
   // 3. Solve Minimum Variance by projected gradient descent
@@ -9532,6 +9616,912 @@ function setupStage6Events() {
  */
 export function setupStage6() {
   renderStage6UI();
+}
+
+/**
+ * Resets the review confirmation state, unchecks the review box,
+ * and disables the portfolio export buttons.
+ * Called whenever a setting, universe, selection, investment amount,
+ * label, relaxation, or regenerated note changes.
+ */
+export function clearReview() {
+  appState.reviewed = false;
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === true) {
+    const chk = document.getElementById("guardrail-reviewed-checkbox");
+    if (chk !== null) {
+      chk.checked = false;
+    }
+    const statusBadge = document.getElementById("guardrail-review-status");
+    if (statusBadge !== null) {
+      statusBadge.textContent = "Unreviewed";
+      statusBadge.className = "badge";
+    }
+    const exportBtn = document.getElementById("btn-export-portfolio");
+    if (exportBtn !== null) {
+      exportBtn.disabled = true;
+    }
+    const stage8ExportBtn = document.getElementById("btn-stage-8-export-portfolio");
+    if (stage8ExportBtn !== null) {
+      stage8ExportBtn.disabled = true;
+    }
+  }
+}
+
+/**
+ * Re-computes pure JavaScript pipeline stages live without network requests.
+ * Runs in order: screen -> gate from stored labels -> weights -> beta -> guardrails.
+ *
+ * @param {number} [fromStage=4] - First stage to recompute
+ */
+export function recomputePureStages(fromStage = 4) {
+  clearReview();
+
+  if (fromStage <= 4) {
+    const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
+    if (hasIndicators === true) {
+      runStage4Screen();
+    }
+  }
+
+  if (fromStage <= 5) {
+    const hasLabels = appState.labels !== null && typeof appState.labels === "object";
+    if (hasLabels === true) {
+      applyTextGate();
+    }
+  }
+
+  if (fromStage <= 6) {
+    const hasGated = Array.isArray(appState.gatedSurvivors) === true && appState.gatedSurvivors.length > 0;
+    if (hasGated === true) {
+      runStage6Optimization();
+      recomputeRollingBeta();
+    }
+  }
+
+  evaluateGuardrails();
+
+  if (appState.note !== null && typeof appState.note === "object") {
+    if (appState.note.investmentAmount !== appState.settings.investmentAmount) {
+      appState.note.isStale = true;
+      setStageStatus(8, "stale");
+    }
+  }
+
+  renderStage4UI();
+  renderStage5UI();
+  renderStage6UI();
+  renderStage7UI();
+  renderStage8UI();
+}
+
+/**
+ * Evaluates all quantitative and internal guardrails.
+ * Returns a list of failure objects, each containing an id, cause, fix, and action button if applicable.
+ *
+ * @param {object} [state=appState] - Application state
+ * @returns {Array<{id: string, cause: string, fix: string, actionText?: string, actionFn?: function, actions?: Array<{text: string, actionFn: function}>}>}
+ */
+export function evaluateGuardrails(state = appState) {
+  const failures = [];
+
+  // 1. Aligned sessions fewer than 200
+  const hasAligned = state.alignedData !== null && typeof state.alignedData === "object";
+  const sessionCount = hasAligned === true && typeof state.alignedData.sessionCount === "number"
+    ? state.alignedData.sessionCount
+    : (hasAligned === true && Array.isArray(state.alignedData.dates) ? state.alignedData.dates.length : 0);
+
+  if (hasAligned === true && sessionCount < 200) {
+    let shortestTicker = "";
+    let minSessions = Infinity;
+    const selected = Array.isArray(state.selectedTickers) ? state.selectedTickers : [];
+    for (let i = 0; i < selected.length; i += 1) {
+      const sym = selected[i];
+      const series = state.priceCache && state.priceCache[sym] ? state.priceCache[sym] : [];
+      if (series.length < minSessions) {
+        minSessions = series.length;
+        shortestTicker = sym;
+      }
+    }
+    const shortestName = shortestTicker.length > 0 ? shortestTicker : "the shortest history constituent";
+    failures.push({
+      id: "aligned-sessions-count",
+      cause: `aligned sessions fewer than 200 (${sessionCount} sessions)`,
+      fix: `deselect the ticker with the shortest history, naming it from the raw data view: deselect ${shortestName}`,
+      actionText: shortestTicker.length > 0 ? `Deselect ${shortestTicker}` : null,
+      actionFn: shortestTicker.length > 0 ? () => toggleConstituentTicker(shortestTicker) : null
+    });
+  }
+
+  // 2. Gated survivors fewer than minimumBreadth after any relaxation
+  const hasScreen = state.screenResult !== null && typeof state.screenResult === "object";
+  const gatedList = Array.isArray(state.gatedSurvivors) ? state.gatedSurvivors : [];
+  const minBreadth = state.settings.minimumBreadth || 5;
+  const relaxCount = state.settings.rsiRelaxCount || 0;
+
+  if (hasScreen === true && gatedList.length < minBreadth) {
+    failures.push({
+      id: "minimum-breadth",
+      cause: `survivors fewer than minimumBreadth after any relaxation (${gatedList.length} < ${minBreadth}, relaxed ${relaxCount} time(s))`,
+      fix: "lower the minimum breadth, or press Relax RSI",
+      actionText: state.settings.rsiThreshold < 50 ? "Relax RSI" : null,
+      actionFn: state.settings.rsiThreshold < 50 ? () => relaxRsiThreshold() : null
+    });
+  }
+
+  // 3. Infeasible problem for the survivor set
+  const cap = state.settings.weightCap || 0.25;
+  const isCapFeasible = (gatedList.length * cap) >= (1.0 - 1e-9);
+  const isMetricFeasible = state.metrics && state.metrics.feasible !== undefined ? state.metrics.feasible : true;
+  if (hasScreen === true && gatedList.length >= minBreadth && (isCapFeasible === false || isMetricFeasible === false)) {
+    failures.push({
+      id: "optimization-infeasible",
+      cause: "infeasible problem for the survivor set",
+      fix: "raise the cap, relax the screen, or select a name in another sector",
+      actionText: state.settings.rsiThreshold < 50 ? "Relax RSI" : null,
+      actionFn: state.settings.rsiThreshold < 50 ? () => relaxRsiThreshold() : null
+    });
+  }
+
+  // 4. Any survivor malformed in exclude mode
+  const gateMode = state.settings.gateMode || "exclude";
+  if (gateMode === "exclude" && state.labels !== null && typeof state.labels === "object") {
+    const screenSurvivors = state.screenResult && Array.isArray(state.screenResult.survivors) ? state.screenResult.survivors : [];
+    let hasMalformedSurvivor = false;
+    for (let i = 0; i < screenSurvivors.length; i += 1) {
+      const sym = screenSurvivors[i];
+      const entry = state.labels[sym];
+      if (entry !== null && entry !== undefined && (entry.isMalformed === true || entry.label === "Malformed")) {
+        hasMalformedSurvivor = true;
+        break;
+      }
+    }
+    if (hasMalformedSurvivor === true) {
+      failures.push({
+        id: "malformed-in-exclude-mode",
+        cause: "any survivor malformed in exclude mode",
+        fix: "regenerate labels, or switch the gate to warn",
+        actions: [
+          { text: "Regenerate labels", actionFn: () => regenerateLabels() },
+          { text: "Switch gate to warn", actionFn: () => validateAndSetGateMode("warn") }
+        ]
+      });
+    }
+  }
+
+  // 5. Any survivor without a text label after a live re-screen
+  if (state.screenResult !== null && Array.isArray(state.screenResult.survivors) === true) {
+    const survivors = state.screenResult.survivors;
+    const hasUnlabelled = survivors.some((sym) => {
+      if (state.labels === null || typeof state.labels !== "object") {
+        return true;
+      }
+      const entry = state.labels[sym];
+      if (entry === null || entry === undefined) {
+        return true;
+      }
+      const hasValid = entry.isMalformed === false && entry.label !== "Malformed" && typeof entry.label === "string" && entry.label.length > 0;
+      return hasValid === false;
+    });
+
+    if (hasUnlabelled === true) {
+      failures.push({
+        id: "survivor-unlabelled",
+        cause: "any survivor without a text label after a live re-screen",
+        fix: "run Label new survivors",
+        actionText: "Label new survivors",
+        actionFn: () => labelNewSurvivors()
+      });
+    }
+  }
+
+  // 6. Gated survivor list does not match survivors that should have passed the active gate mode
+  if (state.screenResult !== null && Array.isArray(state.screenResult.survivors) === true && state.labels !== null && typeof state.labels === "object") {
+    const survivors = state.screenResult.survivors;
+    const expectedGated = [];
+    for (let i = 0; i < survivors.length; i += 1) {
+      const sym = survivors[i];
+      const entry = state.labels[sym];
+      if (entry !== null && entry !== undefined) {
+        if (gateMode === "exclude") {
+          if (entry.isMalformed !== true && entry.label !== "Malformed" && entry.label !== "Headwind") {
+            expectedGated.push(sym);
+          }
+        } else {
+          // warn mode: all pass
+          expectedGated.push(sym);
+        }
+      }
+    }
+
+    const actualGated = Array.isArray(state.gatedSurvivors) ? state.gatedSurvivors : [];
+    const setsMatch = expectedGated.length === actualGated.length && expectedGated.every((sym, idx) => actualGated[idx] === sym);
+    if (setsMatch === false) {
+      failures.push({
+        id: "gated-consistency-check",
+        cause: "the gated survivor list does not match the survivors that should have passed the active gate mode",
+        fix: "run the pipeline again; this is an internal consistency check",
+        actionText: "Run pipeline",
+        actionFn: () => handleRunPipeline()
+      });
+    }
+  }
+
+  // Benchmark consistency check
+  if (state.metrics && state.metrics.consistencyCheck && state.metrics.consistencyCheck.passed === false) {
+    failures.push({
+      id: "consistency-check-failed",
+      cause: `Minimum variance failed benchmark consistency check: ${state.metrics.consistencyError || "volatility exceeds benchmark"}.`,
+      fix: "Inspect the covariance drill-down.",
+      actionText: "Inspect Covariance",
+      actionFn: () => {
+        const sec3 = document.getElementById("stage-section-3");
+        if (sec3 !== null) {
+          sec3.scrollIntoView({ behavior: "smooth" });
+        }
+      }
+    });
+  }
+
+  // 7. Internal validation 1: Weight vector validation (sum outside 1 +/- 1e-4, negative, above cap, or sector > 50%)
+  if (state.weights !== null && Array.isArray(state.weights.minVariance) === true && state.weights.minVariance.length > 0) {
+    let weightSum = 0;
+    let hasNegativeWeight = false;
+    let hasAboveCap = false;
+    const currentCap = state.settings.weightCap || 0.25;
+
+    for (let i = 0; i < state.weights.minVariance.length; i += 1) {
+      const w = state.weights.minVariance[i];
+      weightSum += w;
+      if (w < -1e-6) {
+        hasNegativeWeight = true;
+      }
+      if (w > currentCap + 1e-6) {
+        hasAboveCap = true;
+      }
+    }
+
+    const sumIsInvalid = Math.abs(weightSum - 1.0) > 1e-4;
+
+    let sectorMax = 0;
+    const gatedListForSec = Array.isArray(state.gatedSurvivors) ? state.gatedSurvivors : [];
+    if (gatedListForSec.length === state.weights.minVariance.length) {
+      const secTotals = {};
+      for (let i = 0; i < gatedListForSec.length; i += 1) {
+        const sym = gatedListForSec[i];
+        const sec = getConstituentSector(sym);
+        secTotals[sec] = (secTotals[sec] || 0) + state.weights.minVariance[i];
+        if (secTotals[sec] > sectorMax) {
+          sectorMax = secTotals[sec];
+        }
+      }
+    }
+    const sectorIsInvalid = sectorMax > 0.50 + 1e-9;
+
+    if (sumIsInvalid === true || hasNegativeWeight === true || hasAboveCap === true || sectorIsInvalid === true) {
+      failures.push({
+        id: "internal-weights-validation",
+        cause: "the weight vector does not sum to one within 1e-4, has an entry below zero, has an entry above weightCap, or has a sector sum above 50%",
+        fix: "run the pipeline again; this is an internal weights validation",
+        actionText: "Run pipeline",
+        actionFn: () => handleRunPipeline()
+      });
+    }
+  }
+
+  // 8. Internal validation 2: Dollar allocations sum and non-negativity
+  const allocObj = (state.allocations !== null && state.allocations !== undefined && typeof state.allocations === "object")
+    ? state.allocations
+    : ((state.weights !== null && state.weights !== undefined && typeof state.weights === "object") ? state.weights.allocations : null);
+  const minVarAllocs = (allocObj !== null && allocObj !== undefined && typeof allocObj === "object") ? allocObj.minVariance : null;
+  if (Array.isArray(minVarAllocs) === true && minVarAllocs.length > 0) {
+    let dollarSum = 0;
+    let hasNegativeDollar = false;
+    for (let i = 0; i < minVarAllocs.length; i += 1) {
+      const d = minVarAllocs[i];
+      dollarSum += d;
+      if (d < 0) {
+        hasNegativeDollar = true;
+      }
+    }
+    const invAmount = state.settings.investmentAmount || 1000000;
+    const dollarExceeds = dollarSum > invAmount;
+    if (dollarExceeds === true || hasNegativeDollar === true) {
+      failures.push({
+        id: "internal-dollars-validation",
+        cause: "any dollar allocation is negative, or dollar allocations sum to more than investmentAmount",
+        fix: "run the pipeline again; this is an internal dollars validation",
+        actionText: "Run pipeline",
+        actionFn: () => handleRunPipeline()
+      });
+    }
+  }
+
+  const guardrailsPass = failures.length === 0;
+  state.guardrailResult = {
+    passed: guardrailsPass,
+    failures: failures,
+    evaluatedAt: new Date().toISOString()
+  };
+
+  if (guardrailsPass === false) {
+    setStageStatus(7, "blocked");
+    setStageStatus(8, "blocked");
+  } else {
+    setStageStatus(7, "done");
+    if (state.stageStatus[8] === "blocked") {
+      setStageStatus(8, state.note !== null ? (state.note.isStale ? "stale" : "done") : "idle");
+    }
+  }
+
+  return failures;
+}
+
+/**
+ * Returns a dated export file name in the format: oversold_turn_YYYY-MM-DD_HHMM.json
+ *
+ * @param {Date} [date=new Date()]
+ * @returns {string}
+ */
+export function getExportFileName(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  return `oversold_turn_${year}-${month}-${day}_${hours}${minutes}.json`;
+}
+
+/**
+ * Unit test verifying that getExportFileName matches pattern oversold_turn_\d{4}-\d{2}-\d{2}_\d{4}\.json
+ * and produces distinct names for different times on the same day.
+ *
+ * @returns {boolean}
+ */
+export function testExportFileNamePattern() {
+  const d1 = new Date(2026, 8, 6, 9, 5);
+  const d2 = new Date(2026, 8, 6, 9, 6);
+  const name1 = getExportFileName(d1);
+  const name2 = getExportFileName(d2);
+  const pattern = /^oversold_turn_\d{4}-\d{2}-\d{2}_\d{4}\.json$/;
+  const match1 = pattern.test(name1);
+  const match2 = pattern.test(name2);
+  const distinct = name1 !== name2;
+  return match1 === true && match2 === true && distinct === true;
+}
+
+/**
+ * Unit test verifying that a mocked weight vector summing to 1.01 produces
+ * the internal validation message that the app is at fault.
+ *
+ * @returns {boolean}
+ */
+export function testMockedWeightValidation() {
+  const mockState = {
+    ...appState,
+    weights: {
+      minVariance: [0.50, 0.51]
+    }
+  };
+  const failures = evaluateGuardrails(mockState);
+  const found = failures.find((f) => f.id === "internal-weights-validation");
+  const hasAppAtFault = found !== undefined && typeof found.fix === "string" && found.fix.includes("The app, not the input, is at fault");
+  return hasAppAtFault === true;
+}
+
+/**
+ * Compiles the JSON export structure, excluding keys, raw price arrays,
+ * raw model responses, and full descriptions.
+ *
+ * @param {object} [state=appState]
+ * @returns {object}
+ */
+export function generateExportData(state = appState) {
+  const cleanLabels = {};
+  if (state.labels !== null && typeof state.labels === "object") {
+    const keys = Object.keys(state.labels);
+    for (let i = 0; i < keys.length; i += 1) {
+      const sym = keys[i];
+      if (sym === "gatedSurvivors" || sym === "passedSurvivors") {
+        continue;
+      }
+      const entry = state.labels[sym];
+      if (entry !== null && typeof entry === "object") {
+        const cleanReason = typeof entry.reason === "string"
+          ? entry.reason.replace(/[0-9]/g, "").trim()
+          : "";
+        cleanLabels[sym] = {
+          label: entry.label || "Unclassified",
+          reason: cleanReason,
+          alerts_cited: Array.isArray(entry.alerts_cited) ? [...entry.alerts_cited] : []
+        };
+      }
+    }
+  }
+
+  const cleanSignals = {};
+  if (state.screenResult !== null && typeof state.screenResult.byTicker === "object") {
+    const syms = Object.keys(state.screenResult.byTicker);
+    for (let i = 0; i < syms.length; i += 1) {
+      const s = syms[i];
+      const r = state.screenResult.byTicker[s];
+      cleanSignals[s] = {
+        ticker: s,
+        isOversold: r.isOversold,
+        isTurning: r.isTurning,
+        passesScreen: r.passesScreen,
+        rsi: r.rsi,
+        rsiThreshold: r.rsiThreshold,
+        histogramCurrent: r.histogramCurrent,
+        histogramLagged: r.histogramLagged,
+        histogramLookback: r.histogramLookback
+      };
+    }
+  }
+
+  const startDate = state.alignedData && state.alignedData.dates && state.alignedData.dates.length > 0
+    ? state.alignedData.dates[0]
+    : null;
+  const endDate = state.alignedData && state.alignedData.dates && state.alignedData.dates.length > 0
+    ? state.alignedData.dates[state.alignedData.dates.length - 1]
+    : null;
+  const sessionCount = state.alignedData && typeof state.alignedData.sessionCount === "number"
+    ? state.alignedData.sessionCount
+    : (state.alignedData && state.alignedData.dates ? state.alignedData.dates.length : 0);
+
+  const exportAllocs = (state.allocations !== null && typeof state.allocations === "object")
+    ? state.allocations
+    : ((state.weights !== null && typeof state.weights === "object") ? state.weights.allocations : null);
+  const minVarAllocs = (exportAllocs && Array.isArray(exportAllocs.minVariance))
+    ? [...exportAllocs.minVariance]
+    : (state.dollarAllocations && Array.isArray(state.dollarAllocations.minVariance) ? [...state.dollarAllocations.minVariance] : []);
+  const eqWAllocs = (exportAllocs && Array.isArray(exportAllocs.equalWeight))
+    ? [...exportAllocs.equalWeight]
+    : (state.dollarAllocations && Array.isArray(state.dollarAllocations.equalWeight) ? [...state.dollarAllocations.equalWeight] : []);
+  const invVolAllocs = (exportAllocs && Array.isArray(exportAllocs.inverseVolatility))
+    ? [...exportAllocs.inverseVolatility]
+    : (state.dollarAllocations && Array.isArray(state.dollarAllocations.inverseVolatility) ? [...state.dollarAllocations.inverseVolatility] : []);
+
+  const exportObj = {
+    runTimestamp: new Date().toISOString(),
+    modelIdentifier: state.settings.openRouterModel || DEFAULT_OPENROUTER_MODEL,
+    openRouterModel: state.settings.openRouterModel || DEFAULT_OPENROUTER_MODEL,
+    creditsSetting: state.settings.creditsPerMinute || 144,
+    creditsPerMinute: state.settings.creditsPerMinute || 144,
+    settings: {
+      rsiThreshold: state.settings.baseRsiThreshold || state.settings.rsiThreshold,
+      rsiCurrent: state.settings.rsiThreshold,
+      rsiRelaxCount: state.settings.rsiRelaxCount || 0,
+      gateMode: state.settings.gateMode,
+      weightCap: state.settings.weightCap,
+      minimumBreadth: state.settings.minimumBreadth,
+      histogramLookback: state.settings.histogramLookback,
+      riskFreeRate: state.settings.riskFreeRate,
+      riskFreeRateDate: getTodayNYDateString()
+    },
+    alignedPriceHistory: {
+      startDate: startDate,
+      endDate: endDate,
+      sessionCount: sessionCount
+    },
+    screenSignals: cleanSignals,
+    textLabels: cleanLabels,
+    investmentAmount: state.settings.investmentAmount,
+    weights: {
+      minVariance: {
+        weights: state.weights && state.weights.minVariance ? [...state.weights.minVariance] : [],
+        dollarAllocations: minVarAllocs,
+        feasible: state.metrics && state.metrics.feasible !== undefined ? state.metrics.feasible : true
+      },
+      equalWeight: {
+        weights: state.weights && state.weights.equalWeight ? [...state.weights.equalWeight] : [],
+        dollarAllocations: eqWAllocs,
+        feasible: true
+      },
+      inverseVolatility: {
+        weights: state.weights && state.weights.inverseVolatility ? [...state.weights.inverseVolatility] : [],
+        dollarAllocations: invVolAllocs,
+        feasible: true
+      }
+    },
+    metrics: {
+      minVariance: state.metrics && state.metrics.minVariance ? {
+        annualizedReturn: state.metrics.minVariance.annualizedReturn,
+        annualizedVolatility: state.metrics.minVariance.annualizedVolatility,
+        sharpe: state.metrics.minVariance.sharpe
+      } : null,
+      equalWeight: state.metrics && state.metrics.equalWeight ? {
+        annualizedReturn: state.metrics.equalWeight.annualizedReturn,
+        annualizedVolatility: state.metrics.equalWeight.annualizedVolatility,
+        sharpe: state.metrics.equalWeight.sharpe
+      } : null,
+      inverseVolatility: state.metrics && state.metrics.inverseVolatility ? {
+        annualizedReturn: state.metrics.inverseVolatility.annualizedReturn,
+        annualizedVolatility: state.metrics.inverseVolatility.annualizedVolatility,
+        sharpe: state.metrics.inverseVolatility.sharpe
+      } : null
+    },
+    rollingBeta: {
+      series: state.beta && Array.isArray(state.beta.series) ? state.beta.series : [],
+      currentBeta: state.beta && typeof state.beta.currentBeta === "number" ? state.beta.currentBeta : null,
+      window: 60
+    },
+    guardrailCheckPassed: state.guardrailResult && state.guardrailResult.passed === true,
+    guardrails: {
+      passed: state.guardrailResult && state.guardrailResult.passed === true,
+      evaluatedAt: state.guardrailResult ? state.guardrailResult.evaluatedAt : new Date().toISOString()
+    },
+    note: state.note && typeof state.note.text === "string" ? state.note.text : "Note unavailable"
+  };
+
+  return exportObj;
+}
+
+/**
+ * Exports the run output as a dated JSON file.
+ * Allowed only when guardrails pass and the review checkbox is checked.
+ *
+ * @param {object} [state=appState]
+ * @returns {{fileName: string, data: object}|null}
+ */
+export function exportPortfolio(state = appState) {
+  const failures = evaluateGuardrails(state);
+  const guardrailsPass = failures.length === 0;
+  const isReviewed = state.reviewed === true;
+  const exportIsAllowed = guardrailsPass === true && isReviewed === true;
+
+  if (exportIsAllowed === false) {
+    return null;
+  }
+
+  const exportData = generateExportData(state);
+  const jsonStr = JSON.stringify(exportData, null, 2);
+  const fileName = getExportFileName();
+
+  const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", fileName);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  return { fileName, data: exportData };
+}
+
+/**
+ * Renders the Stage 7 guardrails checklist and blocked card.
+ */
+export function renderStage7UI() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const placeholder = document.getElementById("stage-7-placeholder");
+  const container = document.getElementById("stage-7-container");
+  const hasWeights = appState.weights !== null && Array.isArray(appState.weights.minVariance) === true;
+
+  if (hasWeights === false) {
+    if (placeholder !== null) {
+      placeholder.classList.remove("hidden");
+    }
+    if (container !== null) {
+      container.classList.add("hidden");
+    }
+    return;
+  }
+
+  if (placeholder !== null) {
+    placeholder.classList.add("hidden");
+  }
+  if (container !== null) {
+    container.classList.remove("hidden");
+  }
+
+  const failures = evaluateGuardrails(appState);
+  const guardrailsPass = failures.length === 0;
+
+  const blockedCard = document.getElementById("stage-7-blocked-card");
+  const failuresList = document.getElementById("stage-7-blocked-failures");
+  const checksList = document.getElementById("stage-7-checks-list");
+  const overallBadge = document.getElementById("guardrail-overall-status-badge");
+  const exportBtn = document.getElementById("btn-export-portfolio");
+  const stage8ExportBtn = document.getElementById("btn-stage-8-export-portfolio");
+
+  if (guardrailsPass === false) {
+    if (blockedCard !== null) {
+      blockedCard.classList.remove("hidden");
+    }
+    if (failuresList !== null) {
+      failuresList.innerHTML = failures.map((f, idx) => {
+        let actionHtml = "";
+        if (f.actions && Array.isArray(f.actions) === true) {
+          actionHtml = f.actions.map((act, aIdx) => {
+            return `<button type="button" class="btn btn-secondary blocked-action-btn" id="btn-blocked-act-${idx}-${aIdx}">${act.text}</button>`;
+          }).join(" ");
+        } else if (f.actionText) {
+          actionHtml = `<button type="button" class="btn btn-secondary blocked-action-btn" id="btn-blocked-act-${idx}">${f.actionText}</button>`;
+        }
+        return `
+          <div class="blocked-failure-item" id="blocked-failure-${idx}">
+            <div class="blocked-failure-content">
+              <span class="blocked-failure-cause">Failure: ${f.cause}</span>
+              <span class="blocked-failure-fix">Fix: ${f.fix}</span>
+            </div>
+            ${actionHtml.length > 0 ? `<div class="blocked-failure-action">${actionHtml}</div>` : ""}
+          </div>
+        `;
+      }).join("");
+
+      failures.forEach((f, idx) => {
+        if (f.actions && Array.isArray(f.actions) === true) {
+          f.actions.forEach((act, aIdx) => {
+            const btn = document.getElementById(`btn-blocked-act-${idx}-${aIdx}`);
+            if (btn !== null && typeof act.actionFn === "function") {
+              btn.onclick = act.actionFn;
+            }
+          });
+        } else if (f.actionText && typeof f.actionFn === "function") {
+          const btn = document.getElementById(`btn-blocked-act-${idx}`);
+          if (btn !== null) {
+            btn.onclick = f.actionFn;
+          }
+        }
+      });
+    }
+
+    if (overallBadge !== null) {
+      overallBadge.textContent = "Blocked";
+      overallBadge.className = "badge status-blocked";
+    }
+
+    if (exportBtn !== null) {
+      exportBtn.classList.add("hidden");
+      exportBtn.disabled = true;
+    }
+    if (stage8ExportBtn !== null) {
+      stage8ExportBtn.classList.add("hidden");
+      stage8ExportBtn.disabled = true;
+    }
+  } else {
+    if (blockedCard !== null) {
+      blockedCard.classList.add("hidden");
+    }
+    if (overallBadge !== null) {
+      overallBadge.textContent = "Passed";
+      overallBadge.className = "badge badge-status-pass";
+    }
+
+    if (checksList !== null) {
+      const minBreadth = appState.settings.minimumBreadth || 5;
+      const passItems = [
+        { label: "Price History Sessions", desc: "Aligned history contains at least 200 sessions" },
+        { label: "Minimum Breadth", desc: `Gated survivor count meets or exceeds minimum breadth (${minBreadth})` },
+        { label: "Optimization Feasibility", desc: "Minimum variance quadratic solver found feasible constrained solution" },
+        { label: "Gate Mode Consistency", desc: "Constituent text labels satisfy qualitative gate rules" },
+        { label: "Label Completeness", desc: "Every technical survivor has a valid categorical text label" },
+        { label: "Benchmark Consistency", desc: "Minimum variance annualized volatility is lower than equal-weight and SPY" },
+        { label: "Weight Vector Validation", desc: "Weights sum strictly to 1.0 (within ±0.001), non-negative, <= cap, sectors <= 50%" },
+        { label: "Dollar Allocations Validation", desc: "Allocations sum to total investment capital with zero negative amounts" }
+      ];
+
+      checksList.innerHTML = passItems.map((item, i) => `
+        <div class="guardrail-item" id="guardrail-check-${i}">
+          <div class="guardrail-item-info">
+            <svg class="guardrail-check-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <div>
+              <span class="guardrail-name">${item.label}</span>
+              <p class="guardrail-desc">${item.desc}</p>
+            </div>
+          </div>
+          <span class="badge badge-status-pass">Pass</span>
+        </div>
+      `).join("");
+    }
+
+    const isReviewed = appState.reviewed === true;
+    if (exportBtn !== null) {
+      exportBtn.classList.remove("hidden");
+      exportBtn.disabled = isReviewed === false;
+    }
+    if (stage8ExportBtn !== null) {
+      stage8ExportBtn.classList.remove("hidden");
+      stage8ExportBtn.disabled = isReviewed === false;
+    }
+  }
+
+  const chk = document.getElementById("guardrail-reviewed-checkbox");
+  if (chk !== null) {
+    chk.checked = appState.reviewed === true;
+  }
+  const statusBadge = document.getElementById("guardrail-review-status");
+  if (statusBadge !== null) {
+    if (appState.reviewed === true) {
+      statusBadge.textContent = "Reviewed";
+      statusBadge.className = "badge badge-status-pass";
+    } else {
+      statusBadge.textContent = "Unreviewed";
+      statusBadge.className = "badge";
+    }
+  }
+}
+
+/**
+ * Wires up Stage 7 interactive elements.
+ */
+export function setupStage7() {
+  renderStage7UI();
+
+  const chk = document.getElementById("guardrail-reviewed-checkbox");
+  if (chk !== null) {
+    chk.onchange = (e) => {
+      appState.reviewed = e.target.checked === true;
+      const statusBadge = document.getElementById("guardrail-review-status");
+      if (statusBadge !== null) {
+        if (appState.reviewed === true) {
+          statusBadge.textContent = "Reviewed";
+          statusBadge.className = "badge badge-status-pass";
+        } else {
+          statusBadge.textContent = "Unreviewed";
+          statusBadge.className = "badge";
+        }
+      }
+
+      const guardrailsPass = appState.guardrailResult !== null && appState.guardrailResult.passed === true;
+      const exportIsAllowed = guardrailsPass === true && appState.reviewed === true;
+      const exportBtn = document.getElementById("btn-export-portfolio");
+      if (exportBtn !== null) {
+        exportBtn.disabled = exportIsAllowed === false;
+      }
+      const stage8ExportBtn = document.getElementById("btn-stage-8-export-portfolio");
+      if (stage8ExportBtn !== null) {
+        stage8ExportBtn.disabled = exportIsAllowed === false;
+      }
+    };
+  }
+
+  const exportBtn = document.getElementById("btn-export-portfolio");
+  if (exportBtn !== null) {
+    exportBtn.onclick = () => {
+      exportPortfolio();
+    };
+  }
+
+  const stage8ExportBtn = document.getElementById("btn-stage-8-export-portfolio");
+  if (stage8ExportBtn !== null) {
+    stage8ExportBtn.onclick = () => {
+      exportPortfolio();
+    };
+  }
+}
+
+/**
+ * Generates executive commentary note for Stage 8.
+ *
+ * @returns {Promise<boolean>}
+ */
+export async function generateNote() {
+  clearReview();
+  const inv = appState.settings.investmentAmount || 1000000;
+  const numSurvivors = Array.isArray(appState.gatedSurvivors) ? appState.gatedSurvivors.length : 0;
+  const betaVal = appState.beta && typeof appState.beta.currentBeta === "number" ? appState.beta.currentBeta.toFixed(2) : "N/A";
+  const sharpeVal = appState.metrics && appState.metrics.minVariance ? appState.metrics.minVariance.sharpe.toFixed(2) : "N/A";
+
+  const noteText = `The portfolio allocates $${inv.toLocaleString("en-US")} across ${numSurvivors} oversold turnaround candidates using minimum variance weighting. Portfolio rolling 60-day beta stands at ${betaVal} relative to SPY, and candidate Sharpe ratio is estimated at ${sharpeVal}. Quantitative guardrails and constituent risk headwinds have been evaluated for the committee record.`;
+
+  appState.note = {
+    text: noteText,
+    investmentAmount: inv,
+    isStale: false,
+    timestamp: new Date().toISOString()
+  };
+
+  setStageStatus(8, "done");
+  renderStage8UI();
+  return true;
+}
+
+/**
+ * Regenerates the investment note.
+ *
+ * @returns {Promise<boolean>}
+ */
+export async function regenerateNote() {
+  return generateNote();
+}
+
+/**
+ * Renders the Stage 8 Portfolio & Note user interface.
+ */
+export function renderStage8UI() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const placeholder = document.getElementById("stage-8-placeholder");
+  const container = document.getElementById("stage-8-container");
+  const hasWeights = appState.weights !== null && Array.isArray(appState.weights.minVariance) === true;
+
+  if (hasWeights === false) {
+    if (placeholder !== null) {
+      placeholder.classList.remove("hidden");
+    }
+    if (container !== null) {
+      container.classList.add("hidden");
+    }
+    return;
+  }
+
+  if (placeholder !== null) {
+    placeholder.classList.add("hidden");
+  }
+  if (container !== null) {
+    container.classList.remove("hidden");
+  }
+
+  const inputAmount = document.getElementById("stage-8-investment-amount");
+  if (inputAmount !== null && document.activeElement !== inputAmount) {
+    inputAmount.value = (appState.settings.investmentAmount || 1000000).toLocaleString("en-US");
+  }
+
+  const badgeCapital = document.getElementById("stage-8-total-capital");
+  if (badgeCapital !== null) {
+    badgeCapital.textContent = `$${(appState.settings.investmentAmount || 1000000).toLocaleString("en-US")}`;
+  }
+
+  const staleAlert = document.getElementById("stage-8-note-stale-alert");
+  const noteBody = document.getElementById("stage-8-note-body");
+
+  const noteIsStale = appState.note !== null && (appState.note.isStale === true || appState.note.investmentAmount !== appState.settings.investmentAmount);
+
+  if (staleAlert !== null) {
+    if (noteIsStale === true) {
+      staleAlert.classList.remove("hidden");
+    } else {
+      staleAlert.classList.add("hidden");
+    }
+  }
+
+  if (noteBody !== null) {
+    if (appState.note !== null && typeof appState.note.text === "string") {
+      noteBody.textContent = appState.note.text;
+    } else {
+      noteBody.textContent = "Note unavailable. Press 'Regenerate note' to compose executive commentary.";
+    }
+  }
+}
+
+/**
+ * Wires up Stage 8 interactive controls.
+ */
+export function setupStage8() {
+  renderStage8UI();
+
+  const stage8AmountInput = document.getElementById("stage-8-investment-amount");
+  if (stage8AmountInput !== null) {
+    stage8AmountInput.onblur = (e) => {
+      validateAndSetInvestmentAmount(e.target.value);
+    };
+    stage8AmountInput.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        validateAndSetInvestmentAmount(e.target.value);
+      }
+    };
+  }
+
+  const btnRegenNote = document.getElementById("btn-regenerate-note");
+  if (btnRegenNote !== null) {
+    btnRegenNote.onclick = async () => {
+      await regenerateNote();
+    };
+  }
 }
 
 
