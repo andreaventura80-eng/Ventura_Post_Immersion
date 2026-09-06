@@ -959,15 +959,44 @@
                 <span class="metric-value" id="s5-profiles-cached">0 / 0</span>
                 <span class="metric-subtext" id="s5-profiles-subtext">Cached for session</span>
               </div>
+              <div class="metric-card" id="s5-metric-gated-card">
+                <span class="metric-label">Gated Survivors</span>
+                <span class="metric-value" id="s5-gated-count">0 / 0</span>
+                <span class="metric-subtext" id="s5-gated-subtext">Passed qualitative gate</span>
+              </div>
+              <div class="metric-card" id="s5-metric-gate-mode-card">
+                <span class="metric-label">Gate Mode</span>
+                <span class="metric-value" id="s5-gate-mode-val" style="text-transform: uppercase; font-size: 16px;">exclude</span>
+                <span class="metric-subtext" id="s5-gate-mode-subtext">Headwind names removed</span>
+              </div>
             </div>
 
             <!-- Action Controls -->
             <div class="stage-actions-bar" id="stage-5-actions-bar">
-              <button type="button" class="btn btn-primary" id="btn-run-stage-5">
-                Assemble Alerts &amp; Summaries
-              </button>
+              <div class="stage-actions-left">
+                <button type="button" class="btn btn-primary" id="btn-run-stage-5">
+                  Assemble &amp; Classify
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-regenerate-labels">
+                  Regenerate labels
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-label-new-survivors">
+                  Label new survivors
+                </button>
+              </div>
+              <div class="stage-actions-right">
+                <div class="gate-mode-selector-group">
+                  <label for="s5-gate-mode-select" class="gate-mode-label">Gate Mode:</label>
+                  <select id="s5-gate-mode-select" class="apple-select-field gate-mode-select">
+                    <option value="exclude">exclude (remove headwinds)</option>
+                    <option value="warn">warn (keep &amp; flag)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="stage-action-note-box" id="stage-5-action-note-box">
               <span class="stage-action-note" id="stage-5-action-note">
-                Riskline feed is fetched first. If unavailable, technical survivors qualify as Unclassified.
+                Riskline macro alerts and Twelve Data business summaries qualify survivors through the categorical text gate.
               </span>
             </div>
 
@@ -989,12 +1018,12 @@
               </div>
             </div>
 
-            <!-- Technical Survivors Business Summaries Table Card -->
+            <!-- Technical Survivors Business Summaries & Text Gate Results Table Card -->
             <div class="content-card" id="stage-5-profiles-card">
               <div class="content-card-header">
                 <div class="header-titles">
-                  <h3 class="card-title">Constituent Business Summaries</h3>
-                  <p class="card-subtitle">First three sentences of company description sent to classifier model. Quota-managed at 10 credits/symbol.</p>
+                  <h3 class="card-title">Constituent Summaries &amp; Qualitative Text Gate</h3>
+                  <p class="card-subtitle">Single OpenRouter classifier call evaluates business summaries against macro alerts. Exclude mode drops Headwinds; warn mode flags them.</p>
                 </div>
                 <div class="header-badges">
                   <span class="badge" id="s5-profiles-status-badge">Waiting</span>
@@ -1002,18 +1031,20 @@
               </div>
               <div class="card-body">
                 <div class="table-responsive">
-                  <table class="apple-data-table" id="stage-5-profiles-table" aria-label="Constituent Business Summaries Table">
+                  <table class="apple-data-table" id="stage-5-profiles-table" aria-label="Constituent Business Summaries and Text Gate Table">
                     <thead>
                       <tr>
-                        <th scope="col" style="width: 100px;">Ticker</th>
-                        <th scope="col" style="width: 130px;">Sector</th>
-                        <th scope="col">Business Summary (Sent to Model)</th>
-                        <th scope="col" style="width: 250px;">Status &amp; Credit Source</th>
+                        <th scope="col" style="width: 80px;">Ticker</th>
+                        <th scope="col" style="width: 110px;">Sector</th>
+                        <th scope="col" style="min-width: 250px;">Business Summary</th>
+                        <th scope="col" style="min-width: 270px;">Classifier Label &amp; Reason</th>
+                        <th scope="col" style="min-width: 140px;">Cited Alerts</th>
+                        <th scope="col" style="width: 140px;">Gate Status</th>
                       </tr>
                     </thead>
                     <tbody id="stage-5-profiles-tbody">
                       <tr>
-                        <td colspan="4" class="table-empty-row">Run Stage 5 to assemble business summaries for technical survivors.</td>
+                        <td colspan="6" class="table-empty-row">Run Stage 5 to assemble summaries and evaluate qualitative text gate.</td>
                       </tr>
                     </tbody>
                   </table>
@@ -1093,6 +1124,28 @@
         </div>
       </div>
     </section>
+
+    <!-- Raw Model Response Review Modal -->
+    <div class="modal-backdrop hidden" id="modal-raw-response" role="dialog" aria-modal="true" aria-labelledby="modal-raw-response-title">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 class="modal-title" id="modal-raw-response-title">Raw Classifier Response</h3>
+          <button type="button" class="modal-close-btn" id="btn-close-raw-modal" aria-label="Close modal">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-instruction">The raw response returned by the OpenRouter model is shown below. Malformed entries are surfaced for transparency without unblocking the stage.</p>
+          <pre class="raw-response-pre" id="raw-response-content">No raw response recorded.</pre>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-close-raw-modal-footer">Close</button>
+        </div>
+      </div>
+    </div>
   </main>
 
   <footer class="apple-footer">

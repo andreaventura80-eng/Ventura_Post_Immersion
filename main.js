@@ -386,12 +386,6 @@ export function setupCollapsibleSections() {
  * @param {"warning"|"info"|"error"} level - Banner style level
  */
 export function addGlobalBanner(id, message, level = "warning") {
-  const bannersContainer = document.getElementById("global-banners");
-  const hasContainer = bannersContainer !== null;
-  if (hasContainer === false) {
-    return;
-  }
-
   // Update in appState globalBanners
   if (Array.isArray(appState.globalBanners) === false) {
     appState.globalBanners = [];
@@ -402,6 +396,17 @@ export function addGlobalBanner(id, message, level = "warning") {
     appState.globalBanners[existingAlertIndex] = { id, message, level };
   } else {
     appState.globalBanners.push({ id, message, level });
+  }
+
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const bannersContainer = document.getElementById("global-banners");
+  const hasContainer = bannersContainer !== null;
+  if (hasContainer === false) {
+    return;
   }
 
   let bannerElement = document.getElementById(`banner-${id}`);
@@ -461,6 +466,11 @@ export function removeGlobalBanner(id) {
     }
   }
 
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
   const bannerElement = document.getElementById(`banner-${id}`);
   const hasBannerElement = bannerElement !== null;
   if (hasBannerElement === true) {
@@ -475,6 +485,10 @@ export function removeGlobalBanner(id) {
  */
 export function clearGlobalBanners() {
   appState.globalBanners = [];
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
   const bannersContainer = document.getElementById("global-banners");
   const hasContainer = bannersContainer !== null;
   if (hasContainer === true) {
@@ -1196,12 +1210,17 @@ export function validateAndSetGateMode(val) {
   if (isAllowed === true) {
     appState.settings.gateMode = val;
     clearSettingsError();
+    const hasLabels = appState.labels !== null && typeof appState.labels === "object";
+    if (hasLabels === true) {
+      applyTextGate();
+    }
   } else {
     showSettingsError(`Gate mode must be "exclude" or "warn" (entered "${val}").`);
     renderSettingsUI();
     return false;
   }
   updatePreflightCard();
+  renderSettingsUI();
   return true;
 }
 
@@ -1597,7 +1616,33 @@ const MAX_CONCURRENT_REQUESTS = 5;
  * @param {number} [timeoutMs]
  * @returns {Promise<Response>}
  */
-export async function fetchWithTimeoutAndRetry(url, timeoutMs = 10000) {
+/**
+ * Performs a fetch with timeout, concurrency cap of 5, and exactly one retry.
+ * Supports both (url, timeoutMs) and (url, options, timeoutMs).
+ *
+ * @param {string} url
+ * @param {number | RequestInit} [optionsOrTimeout]
+ * @param {number} [maybeTimeout]
+ * @returns {Promise<Response>}
+ */
+export async function fetchWithTimeoutAndRetry(url, optionsOrTimeout = 10000, maybeTimeout = 10000) {
+  let options = {};
+  let timeoutMs = 10000;
+
+  const isNumberFirst = typeof optionsOrTimeout === "number";
+  if (isNumberFirst === true) {
+    timeoutMs = optionsOrTimeout;
+  } else {
+    const isObjectFirst = typeof optionsOrTimeout === "object" && optionsOrTimeout !== null;
+    if (isObjectFirst === true) {
+      options = optionsOrTimeout;
+      const isNumberSecond = typeof maybeTimeout === "number";
+      if (isNumberSecond === true) {
+        timeoutMs = maybeTimeout;
+      }
+    }
+  }
+
   while (activeRequestsCount >= MAX_CONCURRENT_REQUESTS) {
     await new Promise((res) => setTimeout(res, 50));
   }
@@ -1607,7 +1652,11 @@ export async function fetchWithTimeoutAndRetry(url, timeoutMs = 10000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const resp = await fetch(url, { signal: controller.signal });
+      const fetchOptions = {
+        ...options,
+        signal: controller.signal
+      };
+      const resp = await fetch(url, fetchOptions);
       clearTimeout(timer);
       return resp;
     } catch (err) {
@@ -5742,11 +5791,655 @@ function setSurvivorProfileStatus(ticker, status, profileObj = null) {
   updateStage5Metrics();
 }
 
+export const ALLOWED_GATE_LABELS = ["Headwind", "Neutral", "Tailwind"];
+
+/**
+ * Builds the single classification request for the survivor set:
+ * System instruction, list of constituent packages, and alert list.
+ * Request text is capped at roughly 12,000 characters; if over budget,
+ * oldest alerts are dropped first.
+ *
+ * @param {string[]} survivors
+ * @param {Record<string, any>} [profiles]
+ * @param {Array<{title: string, region: string, category: string}>} [alerts]
+ * @param {any} [universe]
+ * @returns {{systemInstruction: string, userContent: string, fullPromptText: string, includedAlertsCount: number}}
+ */
+export function buildClassificationRequest(survivors, profiles, alerts, universe) {
+  const systemInstruction = `You are a financial risk classifier. Given a list of stock market constituents with their sectors and business summaries, and a list of current macroeconomic risk alerts, determine whether each company faces forward-looking headwinds, tailwinds, or neutral conditions.
+You MUST respond with EXACTLY ONE JSON object and nothing else. No explanation outside JSON, no markdown formatting.
+The JSON schema MUST be:
+{
+  "results": [
+    {
+      "ticker": "TICKER_SYMBOL",
+      "label": "Headwind" | "Neutral" | "Tailwind",
+      "reason": "One single sentence explaining the assessment. The sentence MUST NOT contain any numbers or digits.",
+      "alerts_cited": ["Exact Alert Title 1", "Exact Alert Title 2"]
+    }
+  ]
+}
+Requirements:
+- Provide exactly one result object per requested constituent ticker.
+- The 'label' field must strictly be one of 'Headwind', 'Neutral', or 'Tailwind'.
+- The 'reason' field must be exactly one sentence and MUST NOT contain any digits (0-9). Write numbers in words if needed or avoid numbers altogether.
+- The 'alerts_cited' array must contain only exact titles from the provided macroeconomic risk alerts that are relevant to this constituent, or an empty array [] if none apply.
+- Base your label on whether the company's business summary, sector, and current macroeconomic alerts indicate a forward-looking headwind, tailwind, or neither.`;
+
+  const packages = survivors.map((ticker) => {
+    const sector = getConstituentSector(ticker);
+    const profile = profiles !== null && profiles !== undefined ? profiles[ticker] : null;
+    const hasValidSummary = profile !== null && profile !== undefined && typeof profile.summary === "string" && profile.summary.trim().length > 0;
+    const summary = hasValidSummary === true ? profile.summary.trim() : "Summary unavailable";
+    return `Ticker: ${ticker}\nSector: ${sector}\nSummary: ${summary}`;
+  });
+
+  const constituentsText = `Constituents to classify:\n\n${packages.join("\n\n")}\n\n`;
+
+  let alertsList = Array.isArray(alerts) === true ? [...alerts] : [];
+
+  const buildAlertsText = (alertItems) => {
+    const hasItems = alertItems.length > 0;
+    if (hasItems === false) {
+      return "Macroeconomic Risk Alerts:\n(No alerts available)\n";
+    }
+    const lines = alertItems.map((a) => `- Title: ${a.title} | Region: ${a.region} | Category: ${a.category}`);
+    return `Macroeconomic Risk Alerts (newest to oldest):\n${lines.join("\n")}\n`;
+  };
+
+  const MAX_CHAR_BUDGET = 12000;
+  let alertsText = buildAlertsText(alertsList);
+  let totalChars = systemInstruction.length + constituentsText.length + alertsText.length;
+
+  // Drop oldest alerts first (from the end) if exceeding budget
+  while (totalChars > MAX_CHAR_BUDGET && alertsList.length > 0) {
+    alertsList.pop();
+    alertsText = buildAlertsText(alertsList);
+    totalChars = systemInstruction.length + constituentsText.length + alertsText.length;
+  }
+
+  const userContent = `${constituentsText}${alertsText}`;
+
+  return {
+    systemInstruction,
+    userContent,
+    fullPromptText: `${systemInstruction}\n\n${userContent}`,
+    includedAlertsCount: alertsList.length
+  };
+}
+
+/**
+ * Sets a survivor's categorical label in appState.labels.
+ *
+ * @param {string} ticker
+ * @param {{label: string, reason: string, alerts_cited?: string[], isMalformed?: boolean, originalMalformed?: boolean, malformedReason?: string}} data
+ */
+export function setSurvivorLabel(ticker, data) {
+  const hasLabelsObj = appState.labels !== null && typeof appState.labels === "object";
+  if (hasLabelsObj === false) {
+    appState.labels = {};
+  }
+
+  const isMalformed = data.isMalformed === true;
+  const originalMalformed = data.originalMalformed === true || isMalformed === true;
+
+  appState.labels[ticker] = {
+    label: data.label,
+    reason: data.reason,
+    alerts_cited: Array.isArray(data.alerts_cited) === true ? data.alerts_cited : [],
+    isMalformed: isMalformed,
+    originalMalformed: originalMalformed,
+    malformedReason: data.malformedReason || ""
+  };
+}
+
+/**
+ * Parses the raw classifier response text, validates all constraints,
+ * and sets labels in appState.labels.
+ *
+ * @param {string} rawText
+ * @param {string[]} targetSurvivors
+ * @returns {boolean} True if all target survivors are well-formed
+ */
+export function parseClassifierResponse(rawText, targetSurvivors) {
+  let parsedObj = null;
+  let parseSuccess = false;
+
+  try {
+    const rootData = JSON.parse(rawText);
+    const hasChoices = rootData !== null && typeof rootData === "object" && Array.isArray(rootData.choices) === true && rootData.choices[0] !== undefined;
+    if (hasChoices === true) {
+      const choiceMessage = rootData.choices[0].message;
+      const content = choiceMessage !== null && choiceMessage !== undefined ? choiceMessage.content : "";
+      const isString = typeof content === "string";
+      if (isString === true) {
+        const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+        parsedObj = JSON.parse(cleaned);
+        parseSuccess = true;
+      }
+    } else {
+      const isDirectObject = rootData !== null && typeof rootData === "object";
+      if (isDirectObject === true) {
+        const hasResults = Array.isArray(rootData.results) === true;
+        if (hasResults === true) {
+          parsedObj = rootData;
+          parseSuccess = true;
+        } else {
+          const isArrayRoot = Array.isArray(rootData) === true;
+          if (isArrayRoot === true) {
+            parsedObj = { results: rootData };
+            parseSuccess = true;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    parseSuccess = false;
+  }
+
+  const hasValidResultsArray = parseSuccess === true && parsedObj !== null && Array.isArray(parsedObj.results) === true;
+
+  if (hasValidResultsArray === false) {
+    for (let i = 0; i < targetSurvivors.length; i += 1) {
+      const sym = targetSurvivors[i];
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "Model response could not be parsed as JSON",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "Model response could not be parsed as JSON"
+      });
+    }
+    return false;
+  }
+
+  // Count occurrences of each ticker in results
+  const tickerCounts = new Map();
+  for (let i = 0; i < parsedObj.results.length; i += 1) {
+    const entry = parsedObj.results[i];
+    const isObject = entry !== null && typeof entry === "object";
+    const hasTickerStr = isObject === true && typeof entry.ticker === "string";
+    if (hasTickerStr === true) {
+      const sym = entry.ticker.trim().toUpperCase();
+      const prevCount = tickerCounts.get(sym) || 0;
+      tickerCounts.set(sym, prevCount + 1);
+    }
+  }
+
+  const validAlertTitles = new Set();
+  const hasAlerts = Array.isArray(appState.alerts) === true;
+  if (hasAlerts === true) {
+    for (let i = 0; i < appState.alerts.length; i += 1) {
+      const a = appState.alerts[i];
+      const hasTitle = a !== null && typeof a === "object" && typeof a.title === "string";
+      if (hasTitle === true) {
+        validAlertTitles.add(a.title.trim());
+      }
+    }
+  }
+
+  let allSurvivorsWellFormed = true;
+
+  for (let i = 0; i < targetSurvivors.length; i += 1) {
+    const sym = targetSurvivors[i];
+    const appearsInResults = tickerCounts.has(sym);
+    const count = tickerCounts.get(sym) || 0;
+    const isRepeated = count > 1;
+
+    if (appearsInResults === false) {
+      allSurvivorsWellFormed = false;
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "Constituent omitted from model response",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "Constituent omitted from model response"
+      });
+      continue;
+    }
+
+    if (isRepeated === true) {
+      allSurvivorsWellFormed = false;
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "Duplicate constituent entry returned by model",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "Duplicate constituent entry returned by model"
+      });
+      continue;
+    }
+
+    const entry = parsedObj.results.find((r) => {
+      const isObj = r !== null && typeof r === "object";
+      const hasT = isObj === true && typeof r.ticker === "string";
+      return hasT === true && r.ticker.trim().toUpperCase() === sym;
+    });
+
+    const hasValidEntry = entry !== undefined && entry !== null;
+    if (hasValidEntry === false) {
+      allSurvivorsWellFormed = false;
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "Constituent missing from results",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "Constituent missing from results"
+      });
+      continue;
+    }
+
+    const rawLabel = typeof entry.label === "string" ? entry.label.trim() : "";
+    const labelIsAllowed = ALLOWED_GATE_LABELS.includes(rawLabel);
+
+    const rawReason = typeof entry.reason === "string" ? entry.reason.trim() : "";
+    const reasonHasNoDigit = rawReason.length > 0 && /\d/.test(rawReason) === false;
+
+    if (labelIsAllowed === false) {
+      allSurvivorsWellFormed = false;
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "Model returned invalid categorical label",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "Model returned invalid categorical label"
+      });
+      continue;
+    }
+
+    if (reasonHasNoDigit === false) {
+      allSurvivorsWellFormed = false;
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "Model reason contained digits",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "Model reason contained digits"
+      });
+      continue;
+    }
+
+    let cited = [];
+    const isAlertsArray = Array.isArray(entry.alerts_cited) === true;
+    if (isAlertsArray === true) {
+      cited = entry.alerts_cited
+        .filter((t) => typeof t === "string" && validAlertTitles.has(t.trim()))
+        .map((t) => t.trim());
+    }
+
+    setSurvivorLabel(sym, {
+      label: rawLabel,
+      reason: rawReason,
+      alerts_cited: cited,
+      isMalformed: false,
+      originalMalformed: false,
+      malformedReason: ""
+    });
+  }
+
+  return allSurvivorsWellFormed;
+}
+
+/**
+ * Invokes OpenRouter to classify the requested survivors.
+ * Uses 20-second timeout, 1 retry, temperature 0, and JSON response format.
+ *
+ * @param {string[]} survivorsToClassify
+ * @returns {Promise<boolean>}
+ */
+export async function callOpenRouterClassifier(survivorsToClassify) {
+  const hasSurvivors = Array.isArray(survivorsToClassify) === true && survivorsToClassify.length > 0;
+  if (hasSurvivors === false) {
+    return true;
+  }
+
+  appState.stage5KeyRejected = false;
+  appState.stage5KeyRejectedMessage = "";
+
+  const apiKey = (appState.keys.openRouter || "").trim();
+  const keyIsMissing = apiKey.length === 0;
+
+  if (keyIsMissing === true) {
+    appState.stage5KeyRejected = true;
+    appState.stage5KeyRejectedMessage = "OpenRouter API Key field in Settings is missing. Please enter your API key.";
+    appState.rawLabelResponse = "Error: OpenRouter API key is missing. Please enter your API key in the OpenRouter API Key field in Settings.";
+
+    for (let i = 0; i < survivorsToClassify.length; i += 1) {
+      const sym = survivorsToClassify[i];
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "OpenRouter API Key field in Settings is missing",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "OpenRouter API Key field in Settings is missing"
+      });
+    }
+    return false;
+  }
+
+  const { systemInstruction, userContent } = buildClassificationRequest(
+    survivorsToClassify,
+    appState.profiles,
+    appState.alerts,
+    appState.universe
+  );
+
+  const modelId = (appState.settings.openRouterModel || DEFAULT_OPENROUTER_MODEL).trim();
+
+  const payload = {
+    model: modelId,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: systemInstruction },
+      { role: "user", content: userContent }
+    ]
+  };
+
+  const fetchOptions = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://ai.studio/",
+      "X-Title": "Momentum Value Asset Allocation"
+    },
+    body: JSON.stringify(payload)
+  };
+
+  let response;
+  try {
+    response = await fetchWithTimeoutAndRetry("https://openrouter.ai/api/v1/chat/completions", fetchOptions, 20000);
+  } catch (err) {
+    appState.rawLabelResponse = `Network error after retry: ${err.message || String(err)}`;
+    for (let i = 0; i < survivorsToClassify.length; i += 1) {
+      const sym = survivorsToClassify[i];
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "Classifier network request failed after retry",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "Classifier network request failed after retry"
+      });
+    }
+    return false;
+  }
+
+  const isKeyRejected = response.status === 401 || response.status === 403;
+  if (isKeyRejected === true) {
+    let errBody = "";
+    try {
+      errBody = await response.text();
+    } catch (e) {
+      errBody = "";
+    }
+    appState.stage5KeyRejected = true;
+    appState.stage5KeyRejectedMessage = `OpenRouter API Key field in Settings was rejected (HTTP ${response.status}).`;
+    appState.rawLabelResponse = `HTTP ${response.status} Rejected Key: ${errBody}`;
+
+    for (let i = 0; i < survivorsToClassify.length; i += 1) {
+      const sym = survivorsToClassify[i];
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "OpenRouter API Key field in Settings was rejected",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "OpenRouter API Key field in Settings was rejected"
+      });
+    }
+    return false;
+  }
+
+  const isOk = response.ok === true;
+  if (isOk === false) {
+    let errBody = "";
+    try {
+      errBody = await response.text();
+    } catch (e) {
+      errBody = "";
+    }
+    appState.rawLabelResponse = `HTTP ${response.status}: ${errBody}`;
+    for (let i = 0; i < survivorsToClassify.length; i += 1) {
+      const sym = survivorsToClassify[i];
+      setSurvivorLabel(sym, {
+        label: "Malformed",
+        reason: "OpenRouter server returned error status",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "OpenRouter server returned error status"
+      });
+    }
+    return false;
+  }
+
+  let rawText = "";
+  try {
+    rawText = await response.text();
+  } catch (err) {
+    rawText = String(err);
+  }
+
+  appState.rawLabelResponse = rawText;
+
+  return parseClassifierResponse(rawText, survivorsToClassify);
+}
+
+/**
+ * Applies the qualitative text gate according to appState.settings.gateMode:
+ * - Exclude mode: Headwinds are removed; malformed entries are held out and block Stage 5.
+ * - Warn mode: Headwinds are kept and flagged; malformed entries become Unclassified with reason "response malformed".
+ * Stores the gated survivor list in appState.labels.gatedSurvivors, appState.gatedSurvivors, and appState.passedSurvivors.
+ */
+export function applyTextGate() {
+  const hasScreen = appState.screenResult !== null && typeof appState.screenResult === "object";
+  const survivors = hasScreen === true && Array.isArray(appState.screenResult.survivors) === true
+    ? appState.screenResult.survivors
+    : [];
+
+  const hasLabelsObj = appState.labels !== null && typeof appState.labels === "object";
+  if (hasLabelsObj === false) {
+    appState.labels = {};
+  }
+
+  if (survivors.length === 0) {
+    appState.labels.gatedSurvivors = [];
+    appState.gatedSurvivors = [];
+    appState.passedSurvivors = [];
+    removeGlobalBanner("stage-5-gate-blocked");
+    return;
+  }
+
+  const gateMode = appState.settings.gateMode || "exclude";
+  const isExcludeMode = gateMode === "exclude";
+
+  const gatedList = [];
+  let hasMalformed = false;
+
+  removeGlobalBanner("stage-5-gate-blocked");
+
+  for (let i = 0; i < survivors.length; i += 1) {
+    const sym = survivors[i];
+    let entry = appState.labels[sym];
+
+    const hasEntry = entry !== undefined && entry !== null;
+    if (hasEntry === false) {
+      entry = {
+        label: "Malformed",
+        reason: "No classification recorded",
+        alerts_cited: [],
+        isMalformed: true,
+        originalMalformed: true,
+        malformedReason: "No classification recorded"
+      };
+      appState.labels[sym] = entry;
+    }
+
+    if (isExcludeMode === true) {
+      // Exclude mode
+      const wasOriginalMalformed = entry.originalMalformed === true;
+      if (wasOriginalMalformed === true) {
+        entry.isMalformed = true;
+        entry.label = "Malformed";
+        entry.reason = entry.malformedReason || "response malformed";
+      }
+
+      entry.flagged = false;
+
+      const isCurrentMalformed = entry.isMalformed === true;
+      if (isCurrentMalformed === true) {
+        hasMalformed = true;
+        // Held out of the gated survivor list
+      } else {
+        const isHeadwind = entry.label === "Headwind";
+        if (isHeadwind === true) {
+          // Headwind names are removed from the gated survivor list
+        } else {
+          // Neutral, Tailwind, and Unclassified pass unchanged
+          gatedList.push(sym);
+        }
+      }
+    } else {
+      // Warn mode
+      const wasOriginalMalformed = entry.originalMalformed === true;
+      if (wasOriginalMalformed === true) {
+        entry.isMalformed = false;
+        entry.label = "Unclassified";
+        entry.reason = "response malformed";
+      }
+
+      const isHeadwind = entry.label === "Headwind";
+      if (isHeadwind === true) {
+        // Headwind names are kept and flagged
+        entry.flagged = true;
+        gatedList.push(sym);
+      } else {
+        entry.flagged = false;
+        // Neutral, Tailwind, and Unclassified pass unchanged
+        gatedList.push(sym);
+      }
+    }
+  }
+
+  appState.labels.gatedSurvivors = [...gatedList];
+  appState.gatedSurvivors = [...gatedList];
+  appState.passedSurvivors = [...gatedList];
+
+  const shouldBlockStage5 = isExcludeMode === true && hasMalformed === true;
+  if (shouldBlockStage5 === true) {
+    setStageStatus(5, "blocked");
+    const isKeyRejected = appState.stage5KeyRejected === true;
+    let blockedMsg = "Regenerate labels or switch the gate to warn";
+    if (isKeyRejected === true) {
+      blockedMsg = `${appState.stage5KeyRejectedMessage || "OpenRouter API Key field in Settings was rejected."} Regenerate labels or switch the gate to warn.`;
+    }
+    addGlobalBanner("stage-5-gate-blocked", blockedMsg, "error");
+  } else {
+    setStageStatus(5, "done");
+  }
+
+  renderStage5UI();
+}
+
+/**
+ * Regenerates categorical labels for the whole survivor set.
+ * Repeats classifier call without fetching Twelve Data profiles.
+ * Makes exactly one OpenRouter request and zero Twelve Data requests.
+ *
+ * @returns {Promise<boolean>}
+ */
+export async function regenerateLabels() {
+  const hasScreen = appState.screenResult !== null && typeof appState.screenResult === "object";
+  const survivors = hasScreen === true && Array.isArray(appState.screenResult.survivors) === true
+    ? appState.screenResult.survivors
+    : [];
+
+  if (survivors.length === 0) {
+    return false;
+  }
+
+  appState.labels = {};
+  appState.rawLabelResponse = null;
+  appState.stage5KeyRejected = false;
+  appState.stage5KeyRejectedMessage = "";
+
+  setStageStatus(5, "running");
+  renderStage5UI();
+
+  const success = await callOpenRouterClassifier(survivors);
+  applyTextGate();
+  renderStage5UI();
+  return success;
+}
+
+/**
+ * Labels new or unlabelled survivors.
+ * Fetches only missing profiles and makes one additional classifier call
+ * covering only the unlabelled tickers, merging results into stored labels.
+ *
+ * @returns {Promise<boolean>}
+ */
+export async function labelNewSurvivors() {
+  const hasScreen = appState.screenResult !== null && typeof appState.screenResult === "object";
+  const survivors = hasScreen === true && Array.isArray(appState.screenResult.survivors) === true
+    ? appState.screenResult.survivors
+    : [];
+
+  if (survivors.length === 0) {
+    return false;
+  }
+
+  const unlabelled = survivors.filter((sym) => {
+    const hasLabelsObj = appState.labels !== null && typeof appState.labels === "object";
+    const entry = hasLabelsObj === true ? appState.labels[sym] : null;
+    const hasValidLabel = entry !== null && entry !== undefined && entry.isMalformed === false && entry.label !== "Malformed";
+    return hasValidLabel === false;
+  });
+
+  const hasUnlabelled = unlabelled.length > 0;
+  if (hasUnlabelled === false) {
+    applyTextGate();
+    return true;
+  }
+
+  setStageStatus(5, "running");
+  renderStage5UI();
+
+  // Fetch only missing profiles for unlabelled tickers
+  const apiKey = appState.keys.twelveData || "";
+  const missingProfiles = unlabelled.filter((sym) => {
+    const isCached = appState.profiles !== null && appState.profiles[sym] !== undefined && appState.profiles[sym] !== null;
+    return isCached === false;
+  });
+
+  for (let i = 0; i < missingProfiles.length; i += 1) {
+    const sym = missingProfiles[i];
+    await fetchCompanyProfile(sym, apiKey);
+  }
+
+  // Exactly one classifier call covering only the unlabelled tickers
+  await callOpenRouterClassifier(unlabelled);
+
+  applyTextGate();
+  renderStage5UI();
+  return true;
+}
+
 /**
  * Runs the full Stage 5 Text Gate pipeline:
  * 1. Checks Riskline feed first. If unavailable, technical survivors pass as Unclassified.
  * 2. Fetches Twelve Data profile descriptions for technical survivors within quota budget.
- * 3. Truncates descriptions to 3 sentences and renders Stage 5 UI.
+ * 3. Truncates descriptions to 3 sentences and runs classifier.
+ * 4. Applies qualitative text gate.
  *
  * @param {boolean} forceRefresh - If true, re-evaluates stage (cached profiles are still kept)
  * @returns {Promise<boolean>}
@@ -5760,6 +6453,22 @@ export async function runStage5Pipeline(forceRefresh = false) {
     setStageStatus(5, "idle");
     renderStage5UI();
     return false;
+  }
+
+  const survivors = appState.screenResult.survivors;
+
+  // Check if labels are cached for the session and can be reused
+  const hasLabelsObj = appState.labels !== null && typeof appState.labels === "object";
+  const allLabelled = hasLabelsObj === true && survivors.every((sym) => {
+    const entry = appState.labels[sym];
+    return entry !== undefined && entry !== null;
+  });
+
+  const canReuseCachedLabels = forceRefresh === false && allLabelled === true;
+  if (canReuseCachedLabels === true) {
+    applyTextGate();
+    renderStage5UI();
+    return true;
   }
 
   setStageStatus(5, "running");
@@ -5778,8 +6487,6 @@ export async function runStage5Pipeline(forceRefresh = false) {
     risklineSuccess = false;
   }
 
-  const survivors = appState.screenResult.survivors;
-
   // If Riskline is unavailable, no profile is fetched and no classifier call is made
   if (risklineSuccess === false) {
     if (appState.labels === null || typeof appState.labels !== "object") {
@@ -5790,11 +6497,13 @@ export async function runStage5Pipeline(forceRefresh = false) {
       const sym = survivors[i];
       appState.labels[sym] = {
         label: "Unclassified",
-        reason: "macro feed unavailable"
+        reason: "macro feed unavailable",
+        alerts_cited: [],
+        isMalformed: false,
+        originalMalformed: false,
+        malformedReason: ""
       };
     }
-
-    appState.passedSurvivors = [...survivors];
 
     addGlobalBanner(
       "riskline-feed-unavailable",
@@ -5802,7 +6511,7 @@ export async function runStage5Pipeline(forceRefresh = false) {
       "warning"
     );
 
-    setStageStatus(5, "done");
+    applyTextGate();
     renderStage5UI();
     return true;
   }
@@ -5840,7 +6549,6 @@ export async function runStage5Pipeline(forceRefresh = false) {
   renderStage5UI();
 
   if (tickersToFetch.length > 0) {
-    // Process profile requests with concurrency cap of 5
     const CONCURRENCY_LIMIT = 5;
     let index = 0;
 
@@ -5869,7 +6577,11 @@ export async function runStage5Pipeline(forceRefresh = false) {
     await Promise.all(workers);
   }
 
-  setStageStatus(5, "done");
+  // Step 3: Run the classifier call for survivors
+  await callOpenRouterClassifier(survivors);
+
+  // Step 4: Apply qualitative text gate
+  applyTextGate();
   renderStage5UI();
   return true;
 }
@@ -5882,11 +6594,6 @@ export async function runStage5Pipeline(forceRefresh = false) {
 function updateSingleSurvivorRowUI(ticker) {
   const hasDocument = typeof document !== "undefined";
   if (hasDocument === false) {
-    return;
-  }
-
-  const statusCell = document.getElementById(`s5-status-cell-${ticker}`);
-  if (statusCell === null) {
     return;
   }
 
@@ -5907,30 +6614,24 @@ function updateSingleSurvivorRowUI(ticker) {
   let statusBadgeHtml = "";
   if (isDone === true) {
     statusBadgeHtml = `
-      <span class="badge-status-pass">Done</span>
-      <span class="credit-source-text">${creditSourceLabel}</span>
+      <span class="badge-status-pass" style="font-size: 11px;">Profile ready</span>
     `;
   } else if (isWaiting === true) {
     const countdown = rowState.countdown || quotaState.countdownSeconds || 60;
     statusBadgeHtml = `
-      <span class="badge-status-waiting">Waiting for quota (${countdown}s)</span>
-      <span class="credit-source-text">${creditSourceLabel}</span>
+      <span class="badge-status-waiting" style="font-size: 11px;">Waiting for quota (${countdown}s)</span>
     `;
   } else if (isFetching === true) {
     statusBadgeHtml = `
-      <span class="badge-status-running">Fetching profile...</span>
-      <span class="credit-source-text">${creditSourceLabel}</span>
+      <span class="badge-status-running" style="font-size: 11px;">Fetching profile...</span>
     `;
   } else if (isUnavailable === true) {
     statusBadgeHtml = `
-      <span class="badge-status-fail">Summary unavailable</span>
-      <span class="credit-source-text">${creditSourceLabel}</span>
+      <span class="badge-status-fail" style="font-size: 11px;">Summary unavailable</span>
     `;
   }
 
-  statusCell.innerHTML = statusBadgeHtml;
-
-  // Also update summary cell if done or unavailable
+  // Update summary cell
   const summaryCell = document.getElementById(`s5-summary-cell-${ticker}`);
   if (summaryCell !== null && rowState.profile !== null) {
     const summary = rowState.profile.summary;
@@ -5940,6 +6641,7 @@ function updateSingleSurvivorRowUI(ticker) {
     summaryCell.innerHTML = `
       <div class="summary-cell-content">
         <p class="three-sentence-summary">${escapeHtml(summary)}</p>
+        ${statusBadgeHtml.length > 0 ? `<div style="margin-top: 4px;">${statusBadgeHtml}</div>` : ""}
         ${hasMore === true ? `
           <button type="button" class="btn-more-less" id="btn-toggle-desc-${ticker}" data-ticker="${ticker}" aria-expanded="false">
             More
@@ -5949,6 +6651,12 @@ function updateSingleSurvivorRowUI(ticker) {
             <p class="full-description-text">${escapeHtml(fullDesc)}</p>
           </div>
         ` : ""}
+      </div>
+    `;
+  } else if (summaryCell !== null) {
+    summaryCell.innerHTML = `
+      <div class="summary-cell-content">
+        ${statusBadgeHtml}
       </div>
     `;
   }
@@ -5990,6 +6698,29 @@ function updateStage5Metrics() {
     const cachedCount = survivors.filter((s) => appState.profiles && appState.profiles[s]).length;
     cachedEl.textContent = `${cachedCount} / ${survivors.length}`;
   }
+
+  const gatedEl = document.getElementById("s5-gated-count");
+  if (gatedEl !== null) {
+    const gatedCount = (appState.gatedSurvivors || []).length;
+    gatedEl.textContent = `${gatedCount} / ${survivors.length}`;
+  }
+
+  const gatedSubtextEl = document.getElementById("s5-gated-subtext");
+  if (gatedSubtextEl !== null) {
+    const diff = survivors.length - (appState.gatedSurvivors || []).length;
+    gatedSubtextEl.textContent = diff > 0 ? `${diff} excluded by gate` : "Passed qualitative gate";
+  }
+
+  const gateModeValEl = document.getElementById("s5-gate-mode-val");
+  if (gateModeValEl !== null) {
+    gateModeValEl.textContent = (appState.settings.gateMode || "exclude").toUpperCase();
+  }
+
+  const gateModeSubtextEl = document.getElementById("s5-gate-mode-subtext");
+  if (gateModeSubtextEl !== null) {
+    const isEx = (appState.settings.gateMode || "exclude") === "exclude";
+    gateModeSubtextEl.textContent = isEx ? "Headwind names removed" : "Headwind names kept & flagged";
+  }
 }
 
 /**
@@ -6025,7 +6756,7 @@ function getConstituentSector(ticker) {
  * Renders the entire Stage 5 Text Gate UI:
  * - Metrics summary
  * - Macro alerts card
- * - Survivor business summaries table with More/Less toggle and status column
+ * - Survivor business summaries and qualitative text gate table with 6 columns
  */
 export function renderStage5UI() {
   const hasDocument = typeof document !== "undefined";
@@ -6057,6 +6788,12 @@ export function renderStage5UI() {
 
   updateStage5Metrics();
 
+  // Sync gate mode selector in Stage 5 actions bar
+  const gateSelectEl = document.getElementById("s5-gate-mode-select");
+  if (gateSelectEl !== null) {
+    gateSelectEl.value = appState.settings.gateMode || "exclude";
+  }
+
   // Render Riskline Macro Alerts
   const alertsListEl = document.getElementById("s5-macro-alerts-list");
   const macroStatusBadge = document.getElementById("s5-macro-status-badge");
@@ -6086,24 +6823,27 @@ export function renderStage5UI() {
         macroStatusBadge.className = isDone ? "badge badge-status-fail" : "badge";
         macroStatusBadge.textContent = isDone ? "Feed Unavailable" : "Not Loaded";
       }
-      alertsListEl.innerHTML = `<p class="table-empty-row" style="padding: 12px;">No macro alerts loaded. ${isDone ? "Macro feed was unreachable; technical survivors pass as Unclassified." : "Click Assemble Alerts & Summaries to fetch."}</p>`;
+      alertsListEl.innerHTML = `<p class="table-empty-row" style="padding: 12px;">No macro alerts loaded. ${isDone ? "Macro feed was unreachable; technical survivors pass as Unclassified." : "Click Assemble & Classify to fetch."}</p>`;
     }
   }
 
-  // Render Business Summaries Table
+  // Render Business Summaries & Text Gate Results Table
   const tbodyEl = document.getElementById("stage-5-profiles-tbody");
   const profilesStatusBadge = document.getElementById("s5-profiles-status-badge");
+  const gateMode = appState.settings.gateMode || "exclude";
+  const isExcludeMode = gateMode === "exclude";
 
   if (tbodyEl !== null) {
     const rowsHtml = survivors.map((ticker) => {
       const sector = getConstituentSector(ticker);
       const profile = appState.profiles ? appState.profiles[ticker] : null;
       const rowState = survivorRowState[ticker];
+      const labelEntry = appState.labels ? appState.labels[ticker] : null;
 
       let summaryText = "Pending fetch...";
       let fullDesc = "";
       let hasMore = false;
-      let statusBadgeHtml = `<span class="badge-status-waiting">Waiting</span>`;
+      let profileBadgeHtml = "";
 
       if (profile !== null && profile !== undefined) {
         summaryText = profile.summary;
@@ -6114,32 +6854,90 @@ export function renderStage5UI() {
           : "credits estimated locally";
 
         if (profile.status === "done") {
-          statusBadgeHtml = `
-            <span class="badge-status-pass">Done</span>
-            <span class="credit-source-text">${creditSourceLabel}</span>
-          `;
+          profileBadgeHtml = `<span class="badge-status-pass" style="font-size: 11px;">Profile ready</span>`;
         } else if (profile.status === "unavailable") {
-          statusBadgeHtml = `
-            <span class="badge-status-fail">Summary unavailable</span>
-            <span class="credit-source-text">${creditSourceLabel}</span>
-          `;
+          profileBadgeHtml = `<span class="badge-status-fail" style="font-size: 11px;">Summary unavailable</span>`;
         }
       } else if (rowState !== undefined) {
-        const creditSourceLabel = quotaState.isEstimated === false
-          ? "credits from provider header"
-          : "credits estimated locally";
-
         if (rowState.status === "waiting") {
           const countdown = rowState.countdown || quotaState.countdownSeconds || 60;
-          statusBadgeHtml = `
-            <span class="badge-status-waiting">Waiting for quota (${countdown}s)</span>
-            <span class="credit-source-text">${creditSourceLabel}</span>
-          `;
+          profileBadgeHtml = `<span class="badge-status-waiting" style="font-size: 11px;">Waiting for quota (${countdown}s)</span>`;
         } else if (rowState.status === "fetching") {
-          statusBadgeHtml = `
-            <span class="badge-status-running">Fetching profile...</span>
-            <span class="credit-source-text">${creditSourceLabel}</span>
-          `;
+          profileBadgeHtml = `<span class="badge-status-running" style="font-size: 11px;">Fetching profile...</span>`;
+        }
+      }
+
+      // Classifier label & reason cell
+      let labelBadgeClass = "badge";
+      let labelText = "Pending";
+      let reasonText = "";
+      let showRawBtn = false;
+
+      if (labelEntry !== null && labelEntry !== undefined) {
+        labelText = labelEntry.label;
+        reasonText = labelEntry.reason || "";
+        const isMalformed = labelEntry.isMalformed === true || labelEntry.originalMalformed === true;
+        if (isMalformed === true) {
+          labelBadgeClass = "badge badge-malformed";
+          showRawBtn = true;
+        } else if (labelText === "Headwind") {
+          labelBadgeClass = "badge badge-headwind";
+        } else if (labelText === "Neutral") {
+          labelBadgeClass = "badge badge-neutral";
+        } else if (labelText === "Tailwind") {
+          labelBadgeClass = "badge badge-tailwind";
+        } else if (labelText === "Unclassified") {
+          labelBadgeClass = "badge badge-unclassified";
+          if (labelEntry.originalMalformed === true) {
+            showRawBtn = true;
+          }
+        }
+      }
+
+      const classificationCellHtml = labelEntry !== null && labelEntry !== undefined
+        ? `
+          <div class="classification-cell-box">
+            <span class="${labelBadgeClass}">${escapeHtml(labelText)}</span>
+            ${reasonText.length > 0 ? `<p class="classifier-reason-text">${escapeHtml(reasonText)}</p>` : ""}
+            ${showRawBtn === true ? `
+              <button type="button" class="btn-raw-response" data-action="view-raw-response" data-ticker="${escapeHtml(ticker)}">
+                View raw response
+              </button>
+            ` : ""}
+          </div>
+        `
+        : `<span class="badge-status-waiting">Pending</span>`;
+
+      // Cited Alerts cell
+      let citedAlertsHtml = `<span class="text-subtle">None cited</span>`;
+      if (labelEntry !== null && labelEntry !== undefined && Array.isArray(labelEntry.alerts_cited) === true && labelEntry.alerts_cited.length > 0) {
+        citedAlertsHtml = `
+          <div class="cited-alerts-list">
+            ${labelEntry.alerts_cited.map((a) => `<span class="macro-tag macro-tag-cited">${escapeHtml(a)}</span>`).join("")}
+          </div>
+        `;
+      }
+
+      // Gate Status cell
+      let gateStatusHtml = `<span class="badge-status-waiting">Pending</span>`;
+      if (labelEntry !== null && labelEntry !== undefined) {
+        if (isExcludeMode === true) {
+          if (labelEntry.isMalformed === true) {
+            gateStatusHtml = `<span class="badge badge-status-fail">Held out (malformed)</span>`;
+          } else if (labelEntry.label === "Headwind") {
+            gateStatusHtml = `<span class="badge badge-status-fail">Excluded by gate</span>`;
+          } else {
+            gateStatusHtml = `<span class="badge badge-status-pass">Passed gate</span>`;
+          }
+        } else {
+          // Warn mode
+          if (labelEntry.label === "Headwind") {
+            gateStatusHtml = `<span class="badge badge-status-warning">Flagged (Kept)</span>`;
+          } else if (labelEntry.label === "Unclassified") {
+            gateStatusHtml = `<span class="badge badge-status-pass">Passed (Unclassified)</span>`;
+          } else {
+            gateStatusHtml = `<span class="badge badge-status-pass">Passed gate</span>`;
+          }
         }
       }
 
@@ -6154,6 +6952,7 @@ export function renderStage5UI() {
           <td id="s5-summary-cell-${ticker}">
             <div class="summary-cell-content">
               <p class="three-sentence-summary">${escapeHtml(summaryText)}</p>
+              ${profileBadgeHtml.length > 0 ? `<div style="margin-top: 4px;">${profileBadgeHtml}</div>` : ""}
               ${hasMore === true ? `
                 <button type="button" class="btn-more-less" id="btn-toggle-desc-${ticker}" data-ticker="${ticker}" aria-expanded="false">
                   More
@@ -6165,8 +6964,14 @@ export function renderStage5UI() {
               ` : ""}
             </div>
           </td>
-          <td id="s5-status-cell-${ticker}">
-            ${statusBadgeHtml}
+          <td id="s5-label-cell-${ticker}">
+            ${classificationCellHtml}
+          </td>
+          <td id="s5-alerts-cell-${ticker}">
+            ${citedAlertsHtml}
+          </td>
+          <td id="s5-gate-cell-${ticker}">
+            ${gateStatusHtml}
           </td>
         </tr>
       `;
@@ -6175,13 +6980,14 @@ export function renderStage5UI() {
     tbodyEl.innerHTML = rowsHtml;
 
     if (profilesStatusBadge !== null) {
-      const allDone = survivors.every((s) => appState.profiles && appState.profiles[s]);
-      if (allDone === true) {
+      const allClassified = survivors.every((s) => appState.labels && appState.labels[s] && appState.labels[s].label !== undefined);
+      if (allClassified === true) {
         profilesStatusBadge.className = "badge badge-status-pass";
         profilesStatusBadge.textContent = "Done";
       } else {
+        const classifiedCount = survivors.filter((s) => appState.labels && appState.labels[s] && appState.labels[s].label !== undefined).length;
         profilesStatusBadge.className = "badge";
-        profilesStatusBadge.textContent = `${survivors.filter((s) => appState.profiles && appState.profiles[s]).length} / ${survivors.length} Ready`;
+        profilesStatusBadge.textContent = `${classifiedCount} / ${survivors.length} Classified`;
       }
     }
   }
@@ -6196,7 +7002,7 @@ export function setupStage5() {
     return;
   }
 
-  // Run Stage 5 button
+  // Run Stage 5 button (Assemble & Classify)
   const runBtn = document.getElementById("btn-run-stage-5");
   if (runBtn !== null) {
     runBtn.addEventListener("click", () => {
@@ -6204,12 +7010,63 @@ export function setupStage5() {
     });
   }
 
-  // Delegated More/Less toggle handler
+  // Regenerate labels button
+  const regenBtn = document.getElementById("btn-regenerate-labels");
+  if (regenBtn !== null) {
+    regenBtn.addEventListener("click", () => {
+      regenerateLabels();
+    });
+  }
+
+  // Label new survivors button
+  const labelNewBtn = document.getElementById("btn-label-new-survivors");
+  if (labelNewBtn !== null) {
+    labelNewBtn.addEventListener("click", () => {
+      labelNewSurvivors();
+    });
+  }
+
+  // Gate mode select in Stage 5 actions bar
+  const gateSelect = document.getElementById("s5-gate-mode-select");
+  if (gateSelect !== null) {
+    gateSelect.addEventListener("change", (evt) => {
+      validateAndSetGateMode(evt.target.value);
+    });
+  }
+
+  // Raw response modal close buttons
+  const rawModal = document.getElementById("modal-raw-response");
+  const closeBtn = document.getElementById("btn-close-raw-modal");
+  const closeFooterBtn = document.getElementById("btn-close-raw-modal-footer");
+
+  const hideRawModal = () => {
+    if (rawModal !== null) {
+      rawModal.classList.add("hidden");
+    }
+  };
+
+  if (closeBtn !== null) {
+    closeBtn.addEventListener("click", hideRawModal);
+  }
+  if (closeFooterBtn !== null) {
+    closeFooterBtn.addEventListener("click", hideRawModal);
+  }
+  if (rawModal !== null) {
+    rawModal.addEventListener("click", (evt) => {
+      if (evt.target === rawModal) {
+        hideRawModal();
+      }
+    });
+  }
+
+  // Delegated click handler for More/Less toggle and View Raw Response
   document.addEventListener("click", (evt) => {
     const target = evt.target;
     if (target === null || target === undefined) {
       return;
     }
+
+    // More / Less description toggle
     const moreBtn = target.closest(".btn-more-less");
     if (moreBtn !== null) {
       const ticker = moreBtn.getAttribute("data-ticker");
@@ -6225,6 +7082,19 @@ export function setupStage5() {
           moreBtn.textContent = "More";
           moreBtn.setAttribute("aria-expanded", "false");
         }
+      }
+      return;
+    }
+
+    // View Raw Response button
+    const rawBtn = target.closest("[data-action='view-raw-response']");
+    if (rawBtn !== null) {
+      const preEl = document.getElementById("raw-response-content");
+      if (preEl !== null) {
+        preEl.textContent = appState.rawLabelResponse || "No raw response recorded.";
+      }
+      if (rawModal !== null) {
+        rawModal.classList.remove("hidden");
       }
     }
   });
@@ -6649,6 +7519,14 @@ if (hasWindow === true) {
   window.runStage5Pipeline = runStage5Pipeline;
   window.renderStage5UI = renderStage5UI;
   window.setupStage5 = setupStage5;
+  window.buildClassificationRequest = buildClassificationRequest;
+  window.setSurvivorLabel = setSurvivorLabel;
+  window.parseClassifierResponse = parseClassifierResponse;
+  window.callOpenRouterClassifier = callOpenRouterClassifier;
+  window.applyTextGate = applyTextGate;
+  window.regenerateLabels = regenerateLabels;
+  window.labelNewSurvivors = labelNewSurvivors;
+  window.ALLOWED_GATE_LABELS = ALLOWED_GATE_LABELS;
 }
 
 function initializeApp() {
