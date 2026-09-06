@@ -7422,6 +7422,518 @@ export function setupUniverseUpload() {
   }
 }
 
+// ============================================================================
+// STAGE 6: FEASIBILITY, SIMPLEX PROJECTION, AND SECTOR CONSTRAINTS (DYKSTRA)
+// ============================================================================
+
+/**
+ * Builds a map from sector name to constituent index arrays,
+ * matching the order of the supplied ticker list.
+ *
+ * @param {string[]} tickers - Array of ticker strings in order
+ * @param {string[]|Record<string, number[]>|null} [sectors] - Optional sector list or sector group map
+ * @returns {Record<string, number[]>} Sector names mapped to array of 0-based constituent indices
+ */
+export function buildSectorGroups(tickers, sectors = null) {
+  const isArray = Array.isArray(tickers) === true;
+  if (isArray === false) {
+    throw new Error("buildSectorGroups requires an array of ticker strings.");
+  }
+
+  const groups = {};
+  for (let i = 0; i < tickers.length; i += 1) {
+    const ticker = tickers[i];
+    let sectorName = "";
+    const hasSectorsArray = Array.isArray(sectors) === true && i < sectors.length && typeof sectors[i] === "string";
+    if (hasSectorsArray === true) {
+      sectorName = sectors[i];
+    } else {
+      sectorName = getConstituentSector(ticker);
+    }
+    const hasGroup = groups[sectorName] !== undefined;
+    if (hasGroup === false) {
+      groups[sectorName] = [];
+    }
+    groups[sectorName].push(i);
+  }
+  return groups;
+}
+
+/**
+ * Convenience helper returning sector groups for the current gated survivors list.
+ *
+ * @returns {Record<string, number[]>} Sector groups for appState.gatedSurvivors
+ */
+export function getGatedSectorGroups() {
+  const survivors = Array.isArray(appState.gatedSurvivors) === true ? appState.gatedSurvivors : [];
+  return buildSectorGroups(survivors);
+}
+
+/**
+ * Evaluates whether the allocation problem is mathematically feasible.
+ * The problem is feasible only when cap times the number of names is at least 1
+ * and the names span at least two sectors.
+ *
+ * @param {string[]} tickers - Constituent ticker symbols
+ * @param {string[]|Record<string, number[]>|number|null} [sectors] - Optional sectors, sectorGroups, or cap if called with two arguments
+ * @param {number} [cap] - Maximum allowed weight per asset
+ * @returns {{ feasible: boolean, cause: string, smallestFeasibleCap: string|null }} Feasibility assessment result
+ */
+export function checkFeasibility(tickers, sectors = null, cap = undefined) {
+  let effectiveSectors = sectors;
+  let effectiveCap = cap;
+
+  // Support two-argument invocation: checkFeasibility(tickers, cap)
+  const isSecondArgNumber = typeof sectors === "number" && (cap === undefined || cap === null);
+  if (isSecondArgNumber === true) {
+    effectiveCap = sectors;
+    effectiveSectors = null;
+  }
+
+  const hasCap = typeof effectiveCap === "number" && isNaN(effectiveCap) === false;
+  if (hasCap === false) {
+    effectiveCap = appState.settings.weightCap || 0.25;
+  }
+
+  const n = Array.isArray(tickers) === true ? tickers.length : 0;
+  const hasNoNames = n === 0;
+  if (hasNoNames === true) {
+    return {
+      feasible: false,
+      cause: "No constituents selected; the screen must be relaxed.",
+      smallestFeasibleCap: "The screen must be relaxed"
+    };
+  }
+
+  // 1. Cap condition: cap * n must be at least 1.0 (with 1e-9 tolerance)
+  const capTimesN = n * effectiveCap;
+  const capIsFeasible = capTimesN >= (1.0 - 1e-9);
+  if (capIsFeasible === false) {
+    const smallestCapPercent = Math.ceil(100 / n);
+    const exceedsFiftyPercent = smallestCapPercent > 50;
+    if (exceedsFiftyPercent === true) {
+      return {
+        feasible: false,
+        cause: "Smallest feasible cap exceeds 50%; the screen must be relaxed.",
+        smallestFeasibleCap: "The screen must be relaxed"
+      };
+    } else {
+      return {
+        feasible: false,
+        cause: `Weight cap of ${Math.round(effectiveCap * 100)}% times ${n} names is below 100%. Smallest feasible cap on the 1% grid is ${smallestCapPercent}%.`,
+        smallestFeasibleCap: `${smallestCapPercent}%`
+      };
+    }
+  }
+
+  // 2. Sector condition: names must span at least two distinct sectors
+  let sectorList = [];
+  const isSectorArray = Array.isArray(effectiveSectors) === true && effectiveSectors.length === n;
+  if (isSectorArray === true) {
+    sectorList = effectiveSectors;
+  } else {
+    const isSectorObject = effectiveSectors !== null && typeof effectiveSectors === "object";
+    if (isSectorObject === true) {
+      sectorList = new Array(n).fill("");
+      const entries = effectiveSectors instanceof Map ? Array.from(effectiveSectors.entries()) : Object.entries(effectiveSectors);
+      for (let s = 0; s < entries.length; s += 1) {
+        const [secName, indices] = entries[s];
+        if (Array.isArray(indices) === true) {
+          for (let j = 0; j < indices.length; j += 1) {
+            const idx = indices[j];
+            if (idx >= 0 && idx < n) {
+              sectorList[idx] = secName;
+            }
+          }
+        }
+      }
+    } else {
+      sectorList = tickers.map((ticker) => {
+        return getConstituentSector(ticker);
+      });
+    }
+  }
+
+  const distinctSectors = new Set();
+  for (let i = 0; i < sectorList.length; i += 1) {
+    const sName = sectorList[i];
+    const isNamed = typeof sName === "string" && sName.trim().length > 0;
+    if (isNamed === true) {
+      distinctSectors.add(sName.trim());
+    }
+  }
+
+  const hasAtLeastTwoSectors = distinctSectors.size >= 2;
+  if (hasAtLeastTwoSectors === false) {
+    return {
+      feasible: false,
+      cause: "All names sit in one sector; at least two sectors are required to satisfy the 50% sector limit.",
+      smallestFeasibleCap: null
+    };
+  }
+
+  return {
+    feasible: true,
+    cause: "",
+    smallestFeasibleCap: null
+  };
+}
+
+/**
+ * Internal helper to project a vector onto the capped simplex into a target buffer.
+ *
+ * @param {ArrayLike<number>} v - Input vector
+ * @param {number} cap - Upper bound per asset
+ * @param {Float64Array|number[]} out - Target buffer
+ * @returns {Float64Array|number[]} The updated target buffer
+ */
+function projectCappedSimplexInto(v, cap, out) {
+  const n = v.length;
+  const isEmpty = n === 0;
+  if (isEmpty === true) {
+    return out;
+  }
+
+  let alreadyFeasible = true;
+  let currentSum = 0;
+  for (let i = 0; i < n; i += 1) {
+    const val = v[i];
+    const inBounds = val >= -1e-12 && val <= cap + 1e-12;
+    if (inBounds === false) {
+      alreadyFeasible = false;
+    }
+    currentSum += val;
+  }
+
+  const sumIsCloseToOne = Math.abs(currentSum - 1) <= 1e-12;
+  const isAlreadyFeasible = alreadyFeasible === true && sumIsCloseToOne === true;
+  if (isAlreadyFeasible === true) {
+    for (let i = 0; i < n; i += 1) {
+      out[i] = v[i];
+    }
+    return out;
+  }
+
+  let vMin = v[0];
+  let vMax = v[0];
+  for (let i = 1; i < n; i += 1) {
+    const val = v[i];
+    if (val < vMin) {
+      vMin = val;
+    }
+    if (val > vMax) {
+      vMax = val;
+    }
+  }
+
+  let tauLow = vMin - cap - 1.0;
+  let tauHigh = vMax + 1.0;
+
+  for (let step = 0; step < 100; step += 1) {
+    const tauMid = (tauLow + tauHigh) / 2;
+    let sumW = 0;
+    for (let i = 0; i < n; i += 1) {
+      const w = Math.min(cap, Math.max(0, v[i] - tauMid));
+      out[i] = w;
+      sumW += w;
+    }
+
+    const diff = sumW - 1;
+    const isWithinTolerance = Math.abs(diff) <= 1e-12;
+    if (isWithinTolerance === true) {
+      break;
+    }
+
+    const sumIsGreater = sumW > 1;
+    if (sumIsGreater === true) {
+      tauLow = tauMid;
+    } else {
+      tauHigh = tauMid;
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Euclidean projection onto the capped simplex:
+ * { w | sum(w) = 1, 0 <= w_i <= cap }
+ * via bisection on the Lagrange multiplier tau.
+ * Never mutates the input vector.
+ *
+ * @param {number[]} v - Candidate weight vector
+ * @param {number} cap - Upper bound per asset
+ * @returns {number[]} New array containing projected weights
+ */
+export function projectCappedSimplex(v, cap) {
+  const isArray = Array.isArray(v) === true;
+  if (isArray === false) {
+    throw new Error("projectCappedSimplex requires an array of numbers.");
+  }
+  const n = v.length;
+  const out = new Array(n);
+  projectCappedSimplexInto(v, cap, out);
+  return out;
+}
+
+/**
+ * Euclidean projection onto the half-space for a single GICS sector:
+ * { w | sum_{i in sectorIndices} w_i <= limit }
+ * If the sum exceeds the limit (0.5), subtracts the excess equally from each constituent.
+ * Never mutates the input vector.
+ *
+ * @param {number[]} v - Candidate weight vector
+ * @param {number[]} sectorIndices - 0-based indices of constituents in the sector
+ * @param {number} [limit=0.5] - Maximum allowed sector allocation
+ * @returns {number[]} New array containing projected weights
+ */
+export function projectSectorHalfSpace(v, sectorIndices, limit = 0.5) {
+  const isArray = Array.isArray(v) === true;
+  if (isArray === false) {
+    throw new Error("projectSectorHalfSpace requires an array of weights.");
+  }
+  const hasIndices = Array.isArray(sectorIndices) === true && sectorIndices.length > 0;
+  if (hasIndices === false) {
+    return v.slice();
+  }
+
+  let sectorSum = 0;
+  for (let i = 0; i < sectorIndices.length; i += 1) {
+    const idx = sectorIndices[i];
+    const isInBounds = idx >= 0 && idx < v.length;
+    if (isInBounds === true) {
+      sectorSum += v[idx];
+    }
+  }
+
+  const exceedsLimit = sectorSum > limit;
+  if (exceedsLimit === false) {
+    return v.slice();
+  }
+
+  const excess = sectorSum - limit;
+  const reduction = excess / sectorIndices.length;
+  const result = v.slice();
+  for (let i = 0; i < sectorIndices.length; i += 1) {
+    const idx = sectorIndices[i];
+    const isInBounds = idx >= 0 && idx < v.length;
+    if (isInBounds === true) {
+      result[idx] = result[idx] - reduction;
+    }
+  }
+  return result;
+}
+
+/**
+ * Validates whether a weight vector satisfies all portfolio constraints within 1e-9 tolerance:
+ * 1. Every weight is at least -1e-9 and at most cap + 1e-9
+ * 2. Total weight sum is within 1e-9 of 1.0
+ * 3. Every sector total is at most 0.5 + 1e-9
+ *
+ * @param {number[]} w - Weight vector to validate
+ * @param {number} [cap=0.25] - Maximum asset weight
+ * @param {Record<string, number[]>|Map<string, number[]>|null} [sectorGroups] - Sector constituent index map
+ * @returns {boolean} True if all constraints are satisfied within tolerance
+ */
+export function validateWeights(w, cap = 0.25, sectorGroups = null) {
+  const isArray = Array.isArray(w) === true;
+  const hasItems = isArray === true && w.length > 0;
+  if (hasItems === false) {
+    return false;
+  }
+
+  const effectiveCap = typeof cap === "number" && isNaN(cap) === false ? cap : 0.25;
+  let totalSum = 0;
+
+  for (let i = 0; i < w.length; i += 1) {
+    const weight = w[i];
+    const isAboveMin = weight >= -1e-9;
+    const isBelowMax = weight <= effectiveCap + 1e-9;
+    const isValidComponent = isAboveMin === true && isBelowMax === true;
+    if (isValidComponent === false) {
+      return false;
+    }
+    totalSum += weight;
+  }
+
+  const sumDiff = Math.abs(totalSum - 1);
+  const isSumOne = sumDiff <= 1e-9;
+  if (isSumOne === false) {
+    return false;
+  }
+
+  const hasSectors = sectorGroups !== null && typeof sectorGroups === "object";
+  if (hasSectors === true) {
+    const sectorEntries = sectorGroups instanceof Map
+      ? Array.from(sectorGroups.entries())
+      : Object.entries(sectorGroups);
+
+    for (let s = 0; s < sectorEntries.length; s += 1) {
+      const [secName, indices] = sectorEntries[s];
+      const hasIndices = Array.isArray(indices) === true && indices.length > 0;
+      if (hasIndices === true) {
+        let sectorSum = 0;
+        for (let j = 0; j < indices.length; j += 1) {
+          const idx = indices[j];
+          const isInBounds = idx >= 0 && idx < w.length;
+          if (isInBounds === true) {
+            sectorSum += w[idx];
+          }
+        }
+        const sectorWithinLimit = sectorSum <= 0.5 + 1e-9;
+        if (sectorWithinLimit === false) {
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Projects a candidate weight vector onto the intersection of the capped simplex
+ * and all GICS sector half-spaces using Dykstra's alternating projection algorithm.
+ * Never mutates the input array.
+ *
+ * @param {number[]} v - Candidate weight vector
+ * @param {number} cap - Maximum weight per asset
+ * @param {Record<string, number[]>|Map<string, number[]>|null} sectorGroups - Sector to index array mapping
+ * @returns {number[]} Feasible weight vector
+ */
+export function projectFeasible(v, cap, sectorGroups) {
+  const isArray = Array.isArray(v) === true;
+  if (isArray === false) {
+    throw new Error("projectFeasible requires an array of numbers.");
+  }
+  const n = v.length;
+  const isEmpty = n === 0;
+  if (isEmpty === true) {
+    return [];
+  }
+
+  const sectorIndicesList = [];
+  const hasSectorGroups = sectorGroups !== null && typeof sectorGroups === "object";
+  if (hasSectorGroups === true) {
+    if (sectorGroups instanceof Map) {
+      for (const indices of sectorGroups.values()) {
+        const hasValidIndices = Array.isArray(indices) === true && indices.length > 0;
+        if (hasValidIndices === true) {
+          sectorIndicesList.push(indices);
+        }
+      }
+    } else {
+      const keys = Object.keys(sectorGroups);
+      for (let k = 0; k < keys.length; k += 1) {
+        const indices = sectorGroups[keys[k]];
+        const hasValidIndices = Array.isArray(indices) === true && indices.length > 0;
+        if (hasValidIndices === true) {
+          sectorIndicesList.push(indices);
+        }
+      }
+    }
+  }
+
+  const m = sectorIndicesList.length;
+
+  // Pre-allocate working memory to maintain allocation-free execution in the cycle loop
+  const p = new Array(m + 1);
+  for (let k = 0; k <= m; k += 1) {
+    p[k] = new Float64Array(n);
+  }
+
+  const x = new Float64Array(n);
+  for (let i = 0; i < n; i += 1) {
+    x[i] = v[i];
+  }
+
+  const xPrev = new Float64Array(n);
+  const y = new Float64Array(n);
+  const tempProjected = new Float64Array(n);
+
+  for (let cycle = 0; cycle < 200; cycle += 1) {
+    for (let i = 0; i < n; i += 1) {
+      xPrev[i] = x[i];
+    }
+
+    // 1. Constraint 0: Capped simplex projection
+    for (let i = 0; i < n; i += 1) {
+      y[i] = x[i] + p[0][i];
+    }
+    projectCappedSimplexInto(y, cap, tempProjected);
+    for (let i = 0; i < n; i += 1) {
+      p[0][i] = y[i] - tempProjected[i];
+      x[i] = tempProjected[i];
+    }
+
+    // 2. Constraints 1..m: GICS sector half-space projections
+    for (let s = 0; s < m; s += 1) {
+      const k = s + 1;
+      const secIndices = sectorIndicesList[s];
+      for (let i = 0; i < n; i += 1) {
+        y[i] = x[i] + p[k][i];
+      }
+
+      let sectorSum = 0;
+      for (let j = 0; j < secIndices.length; j += 1) {
+        const idx = secIndices[j];
+        if (idx >= 0 && idx < n) {
+          sectorSum += y[idx];
+        }
+      }
+
+      const exceedsSectorLimit = sectorSum > 0.5;
+      if (exceedsSectorLimit === true) {
+        const excess = sectorSum - 0.5;
+        const reduction = excess / secIndices.length;
+        for (let i = 0; i < n; i += 1) {
+          tempProjected[i] = y[i];
+        }
+        for (let j = 0; j < secIndices.length; j += 1) {
+          const idx = secIndices[j];
+          if (idx >= 0 && idx < n) {
+            tempProjected[idx] = tempProjected[idx] - reduction;
+          }
+        }
+      } else {
+        for (let i = 0; i < n; i += 1) {
+          tempProjected[i] = y[i];
+        }
+      }
+
+      for (let i = 0; i < n; i += 1) {
+        p[k][i] = y[i] - tempProjected[i];
+        x[i] = tempProjected[i];
+      }
+    }
+
+    let maxChange = 0;
+    for (let i = 0; i < n; i += 1) {
+      const diff = Math.abs(x[i] - xPrev[i]);
+      if (diff > maxChange) {
+        maxChange = diff;
+      }
+    }
+
+    const maxChangeIsBelowTolerance = maxChange < 1e-12;
+    const cycleLimitIsReached = cycle >= 199;
+    const shouldStop = maxChangeIsBelowTolerance === true || cycleLimitIsReached === true;
+    if (shouldStop === true) {
+      break;
+    }
+  }
+
+  const result = Array.from(x);
+
+  // Assert that output adheres to all constraints within 1e-9 tolerance
+  const isValid = validateWeights(result, cap, sectorGroups);
+  if (isValid === false) {
+    throw new Error("projectFeasible assertion failed: output weights violate constraints (weight below 0, above cap, or sector above 0.5 by more than 1e-9).");
+  }
+
+  return result;
+}
+
 // Attach helpers and state to window for testing and subsequent prompts
 const hasWindow = typeof window !== "undefined";
 if (hasWindow === true) {
@@ -7527,6 +8039,13 @@ if (hasWindow === true) {
   window.regenerateLabels = regenerateLabels;
   window.labelNewSurvivors = labelNewSurvivors;
   window.ALLOWED_GATE_LABELS = ALLOWED_GATE_LABELS;
+  window.buildSectorGroups = buildSectorGroups;
+  window.getGatedSectorGroups = getGatedSectorGroups;
+  window.checkFeasibility = checkFeasibility;
+  window.projectCappedSimplex = projectCappedSimplex;
+  window.projectSectorHalfSpace = projectSectorHalfSpace;
+  window.validateWeights = validateWeights;
+  window.projectFeasible = projectFeasible;
 }
 
 function initializeApp() {
