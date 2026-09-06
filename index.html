@@ -500,6 +500,9 @@
               <button type="button" class="stage-3-tab" id="tab-covariance" role="tab" aria-selected="false" aria-controls="panel-covariance">
                 Covariance Matrix (<span id="cov-matrix-dims">--</span>)
               </button>
+              <button type="button" class="stage-3-tab" id="tab-rsi" role="tab" aria-selected="false" aria-controls="panel-rsi">
+                RSI(14) & Wilder Recursion
+              </button>
               <button type="button" class="stage-3-tab" id="tab-slicer" role="tab" aria-selected="false" aria-controls="panel-slicer">
                 Sub-Matrix Slicer
               </button>
@@ -509,8 +512,8 @@
             <div class="stage-3-panel active" id="panel-volatilities" role="tabpanel" aria-labelledby="tab-volatilities">
               <div class="table-header-bar">
                 <div class="table-title-group">
-                  <h3 class="table-title">Constituent Volatilities & Daily Return Series</h3>
-                  <span class="table-subtitle">Daily simple returns r_t = (P_t - P_t-1) / P_t-1, sample standard deviation (n-1), and annualized volatility (x sqrt(252))</span>
+                  <h3 class="table-title">Constituent Volatilities, Returns & RSI(14)</h3>
+                  <span class="table-subtitle">Daily simple returns r_t = (P_t - P_t-1) / P_t-1, sample standard deviation (n-1), annualized volatility (x sqrt(252)), and Wilder RSI(14)</span>
                 </div>
                 <div class="table-stats-group" id="volatilities-table-stats"></div>
               </div>
@@ -524,11 +527,13 @@
                       <th scope="col">Daily Std Dev (s)</th>
                       <th scope="col">Daily Variance (s^2)</th>
                       <th scope="col">Annualized Vol</th>
+                      <th scope="col">RSI (14)</th>
+                      <th scope="col">Wilder Audit</th>
                     </tr>
                   </thead>
                   <tbody id="volatilities-tbody">
                     <tr>
-                      <td colspan="6" class="table-empty-row">Run the pipeline from Stage 1 to compute simple returns and annualized volatility.</td>
+                      <td colspan="8" class="table-empty-row">Run the pipeline from Stage 1 to compute simple returns, annualized volatility, and RSI(14).</td>
                     </tr>
                   </tbody>
                 </table>
@@ -548,7 +553,102 @@
               </div>
             </div>
 
-            <!-- Panel 3: Sub-Matrix Slicer -->
+            <!-- Panel 3: RSI(14) & Wilder Recursion -->
+            <div class="stage-3-panel" id="panel-rsi" role="tabpanel" aria-labelledby="tab-rsi" hidden>
+              <div class="table-header-bar">
+                <div class="table-title-group">
+                  <h3 class="table-title">RSI(14) with J. Welles Wilder Smoothing Recursion</h3>
+                  <span class="table-subtitle">Seed averages from first 14 sessions (closes 1 to 15). All subsequent values computed recursively using Wilder smoothing. Every intermediate average is retained for auditability.</span>
+                </div>
+                <div class="table-stats-group" id="rsi-table-stats"></div>
+              </div>
+
+              <!-- Controls & Ticker Selection -->
+              <div class="rsi-controls-card">
+                <div class="rsi-selector-group">
+                  <label for="rsi-ticker-select" class="rsi-label">Select Constituent or Benchmark to Inspect:</label>
+                  <select id="rsi-ticker-select" class="apple-input-field">
+                    <option value="">Select a ticker...</option>
+                  </select>
+                </div>
+                <div class="rsi-quick-tickers" id="rsi-quick-tickers"></div>
+              </div>
+
+              <!-- Audit Metric Cards for the Selected Ticker -->
+              <div class="rsi-metric-grid" id="rsi-metric-grid">
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Selected Ticker</span>
+                  <span class="stage-3-metric-val" id="rsi-card-ticker">--</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Current RSI (14)</span>
+                  <span class="stage-3-metric-val" id="rsi-card-current">--</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Seed Avg Gain (First 14)</span>
+                  <span class="stage-3-metric-val" id="rsi-card-seed-gain">--</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Seed Avg Loss (First 14)</span>
+                  <span class="stage-3-metric-val" id="rsi-card-seed-loss">--</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">First RSI (Session 15)</span>
+                  <span class="stage-3-metric-val" id="rsi-card-seed-rsi">--</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Final Avg Gain</span>
+                  <span class="stage-3-metric-val" id="rsi-card-final-gain">--</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Final Avg Loss</span>
+                  <span class="stage-3-metric-val" id="rsi-card-final-loss">--</span>
+                </div>
+                <div class="stage-3-metric-card">
+                  <span class="stage-3-metric-label">Total Closes Evaluated</span>
+                  <span class="stage-3-metric-val" id="rsi-card-closes-count">--</span>
+                </div>
+              </div>
+
+              <!-- Mathematical Specification Card -->
+              <div class="rsi-explainer-card">
+                <div class="rsi-explainer-title">Wilder Smoothing Mathematical Specification</div>
+                <p class="rsi-explainer-text">
+                  <strong>1. Seed:</strong> Initial average gain and average loss are simple means of the first 14 session price changes (Day 2 to Day 15).
+                  <br>
+                  <strong>2. Smoothing Recursion:</strong> For each subsequent session, <code>New Avg = (Previous Avg * 13 + Current Gain or Loss) / 14</code>.
+                  <br>
+                  <strong>3. Relative Strength (RS) & RSI:</strong> <code>RS = AvgGain / AvgLoss</code>, and <code>RSI = 100 - (100 / (1 + RS))</code>. Edge cases: zero loss gives RSI 100; zero gain gives RSI 0; both zero gives RSI 50.
+                </p>
+              </div>
+
+              <!-- Complete Recursion Table Container -->
+              <div class="table-scroll-container" style="max-height: 480px;">
+                <table class="apple-data-table" id="rsi-recursion-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Session #</th>
+                      <th scope="col">Date</th>
+                      <th scope="col">Close ($)</th>
+                      <th scope="col">Change ($)</th>
+                      <th scope="col">Gain ($)</th>
+                      <th scope="col">Loss ($)</th>
+                      <th scope="col">Running Avg Gain</th>
+                      <th scope="col">Running Avg Loss</th>
+                      <th scope="col">RS</th>
+                      <th scope="col">RSI (14)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="rsi-recursion-tbody">
+                    <tr>
+                      <td colspan="10" class="table-empty-row">Run the pipeline from Stage 1 to view RSI recursion series.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Panel 4: Sub-Matrix Slicer -->
             <div class="stage-3-panel" id="panel-slicer" role="tabpanel" aria-labelledby="tab-slicer" hidden>
               <div class="slicer-card">
                 <div class="slicer-header">

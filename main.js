@@ -1691,16 +1691,16 @@ export function renderRawPricesTable() {
       status = "excluded";
     }
 
-    let sessionsText = "—";
-    let dateRangeText = "—";
-    let latestCloseText = "—";
+    let sessionsText = "--";
+    let dateRangeText = "--";
+    let latestCloseText = "--";
 
     if (hasCached === true) {
       const count = info.rowCount !== null && info.rowCount !== undefined ? info.rowCount : cachedSeries.length;
       sessionsText = `${count} sessions`;
       const firstD = cachedSeries[0].datetime;
       const lastD = cachedSeries[cachedSeries.length - 1].datetime;
-      dateRangeText = info.dateRange ? info.dateRange : `${firstD} → ${lastD}`;
+      dateRangeText = info.dateRange ? info.dateRange : `${firstD} -> ${lastD}`;
       const lastBar = cachedSeries[cachedSeries.length - 1];
       if (lastBar !== undefined && lastBar.close !== undefined) {
         latestCloseText = `$${lastBar.close.toFixed(2)}`;
@@ -1726,8 +1726,8 @@ export function renderRawPricesTable() {
       statusLabel = "deselected";
     }
 
-    let noteText = info.note || info.message || "—";
-    if (isBenchmark === true && (noteText === "—" || noteText === "")) {
+    let noteText = info.note || info.message || "--";
+    if (isBenchmark === true && (noteText === "--" || noteText === "")) {
       noteText = "Benchmark (rolling beta only)";
     }
 
@@ -2440,8 +2440,181 @@ export function showStage3Alert(message, type = "error") {
 }
 
 /**
+ * Computes Relative Strength Index (RSI) using J. Welles Wilder smoothing recursion.
+ * Period is fixed at 14 by the caller.
+ *
+ * Steps:
+ * 1. Require at least period + 1 closes. If fewer are available, return an object
+ *    with insufficientHistory set to true and let the row show "insufficient history".
+ * 2. Compute change between consecutive closes: gain is positive part, loss is positive part of negative.
+ * 3. Seed: average gain is simple mean of first 14 gains; average loss is simple mean of first 14 losses.
+ * 4. For each following session, update with Wilder smoothing:
+ *    new average = (previous average * 13 + current gain or loss) / 14.
+ *    Record running average gain and average loss at every session.
+ * 5. At every session from seed onward compute RS = average gain / average loss,
+ *    RSI = 100 - 100 / (1 + RS), with edge cases:
+ *    average loss zero gives RSI 100; average gain zero gives RSI 0; both zero gives RSI 50.
+ * 6. Return the full RSI series, seed averages, arrays of running average gain and average loss,
+ *    and final average gain and loss. The current RSI is the last value of the series.
+ *
+ * @param {number[]} closes - Array of adjusted close prices
+ * @param {number} [period=14] - Lookback period (fixed at 14 by caller)
+ * @returns {object} Full RSI series, seed data, running averages, and current RSI
+ */
+export function computeRsi(closes, period = 14) {
+  const isArray = Array.isArray(closes) === true;
+  const targetPeriod = typeof period === "number" && period > 0 ? period : 14;
+  const minRequiredCloses = targetPeriod + 1;
+
+  if (isArray === false) {
+    return {
+      insufficientHistory: true,
+      period: targetPeriod,
+      closesCount: 0,
+      seedAvgGain: null,
+      seedAvgLoss: null,
+      seedIndex: null,
+      runningAvgGains: [],
+      runningAvgLosses: [],
+      rsiSeries: [],
+      currentRsi: null,
+      finalAvgGain: null,
+      finalAvgLoss: null
+    };
+  }
+
+  const hasSufficientCloses = closes.length >= minRequiredCloses;
+  if (hasSufficientCloses === false) {
+    return {
+      insufficientHistory: true,
+      period: targetPeriod,
+      closesCount: closes.length,
+      seedAvgGain: null,
+      seedAvgLoss: null,
+      seedIndex: null,
+      runningAvgGains: [],
+      runningAvgLosses: [],
+      rsiSeries: [],
+      currentRsi: null,
+      finalAvgGain: null,
+      finalAvgLoss: null
+    };
+  }
+
+  const numChanges = closes.length - 1;
+  const gains = [];
+  const losses = [];
+
+  for (let i = 1; i < closes.length; i += 1) {
+    const prevRaw = closes[i - 1];
+    const currRaw = closes[i];
+    const prevIsNum = typeof prevRaw === "number";
+    const prev = prevIsNum === true ? prevRaw : parseFloat(prevRaw);
+    const currIsNum = typeof currRaw === "number";
+    const curr = currIsNum === true ? currRaw : parseFloat(currRaw);
+    const isValid = isNaN(prev) === false && isNaN(curr) === false;
+
+    if (isValid === false) {
+      gains.push(0);
+      losses.push(0);
+      continue;
+    }
+
+    const change = curr - prev;
+    const isPositiveChange = change > 0;
+    const isNegativeChange = change < 0;
+
+    if (isPositiveChange === true) {
+      gains.push(change);
+      losses.push(0);
+    } else if (isNegativeChange === true) {
+      gains.push(0);
+      losses.push(-change);
+    } else {
+      gains.push(0);
+      losses.push(0);
+    }
+  }
+
+  // Seed: simple mean of first targetPeriod gains and losses (changes 0 to targetPeriod - 1)
+  let sumFirstGains = 0;
+  let sumFirstLosses = 0;
+  for (let i = 0; i < targetPeriod; i += 1) {
+    sumFirstGains += gains[i];
+    sumFirstLosses += losses[i];
+  }
+  const seedAvgGain = sumFirstGains / targetPeriod;
+  const seedAvgLoss = sumFirstLosses / targetPeriod;
+
+  // Helper to compute RSI with specified edge cases
+  const calculateRsiValue = (avgGain, avgLoss) => {
+    const gainIsZero = avgGain === 0;
+    const lossIsZero = avgLoss === 0;
+
+    if (gainIsZero === true && lossIsZero === true) {
+      return 50;
+    }
+    if (lossIsZero === true) {
+      return 100;
+    }
+    if (gainIsZero === true) {
+      return 0;
+    }
+
+    const rs = avgGain / avgLoss;
+    return 100 - 100 / (1 + rs);
+  };
+
+  const seedRsi = calculateRsiValue(seedAvgGain, seedAvgLoss);
+
+  // Stored running averages and RSI series (one entry per session from seed onward)
+  const runningAvgGains = [seedAvgGain];
+  const runningAvgLosses = [seedAvgLoss];
+  const rsiSeries = [seedRsi];
+
+  let currentAvgGain = seedAvgGain;
+  let currentAvgLoss = seedAvgLoss;
+
+  // Wilder smoothing recursion for subsequent sessions:
+  // new average = (previous average * 13 + current) / 14
+  const multiplier = targetPeriod - 1;
+  for (let i = targetPeriod; i < numChanges; i += 1) {
+    const currentGain = gains[i];
+    const currentLoss = losses[i];
+
+    currentAvgGain = (currentAvgGain * multiplier + currentGain) / targetPeriod;
+    currentAvgLoss = (currentAvgLoss * multiplier + currentLoss) / targetPeriod;
+
+    runningAvgGains.push(currentAvgGain);
+    runningAvgLosses.push(currentAvgLoss);
+
+    const rsiVal = calculateRsiValue(currentAvgGain, currentAvgLoss);
+    rsiSeries.push(rsiVal);
+  }
+
+  const finalAvgGain = runningAvgGains[runningAvgGains.length - 1];
+  const finalAvgLoss = runningAvgLosses[runningAvgLosses.length - 1];
+  const currentRsi = rsiSeries[rsiSeries.length - 1];
+
+  return {
+    insufficientHistory: false,
+    period: targetPeriod,
+    closesCount: closes.length,
+    seedAvgGain: seedAvgGain,
+    seedAvgLoss: seedAvgLoss,
+    seedIndex: targetPeriod,
+    runningAvgGains: runningAvgGains,
+    runningAvgLosses: runningAvgLosses,
+    rsiSeries: rsiSeries,
+    currentRsi: currentRsi,
+    finalAvgGain: finalAvgGain,
+    finalAvgLoss: finalAvgLoss
+  };
+}
+
+/**
  * Computes daily simple returns, daily standard deviation, annualized volatility,
- * and the sample covariance matrix across all aligned constituent tickers.
+ * sample covariance matrix across all aligned constituent tickers, and Wilder RSI(14).
  * SPY returns and volatility are computed on its own dates and kept out of the matrix.
  */
 export function computeReturnsAndCovariance() {
@@ -2463,9 +2636,10 @@ export function computeReturnsAndCovariance() {
   const returnsByTicker = {};
   const dailyStdByTicker = {};
   const annualizedVolByTicker = {};
+  const rsiByTicker = {};
   const perTickerData = {};
 
-  // Compute returns and volatilities for each constituent
+  // Compute returns, volatilities, and Wilder RSI(14) for each constituent
   for (let i = 0; i < constituentTickers.length; i += 1) {
     const ticker = constituentTickers[i];
     const prices = aligned.prices[ticker];
@@ -2481,14 +2655,17 @@ export function computeReturnsAndCovariance() {
 
     const dStd = computeDailyStd(retSeries);
     const annVol = computeAnnualizedVol(dStd);
+    const rsiResult = computeRsi(prices, 14);
 
     returnsByTicker[ticker] = retSeries;
     dailyStdByTicker[ticker] = dStd;
     annualizedVolByTicker[ticker] = annVol;
+    rsiByTicker[ticker] = rsiResult;
     perTickerData[ticker] = {
       returns: [...retSeries],
       dailyStd: dStd,
-      annualizedVol: annVol
+      annualizedVol: annVol,
+      rsi: rsiResult
     };
   }
 
@@ -2506,7 +2683,7 @@ export function computeReturnsAndCovariance() {
     }
   }
 
-  // Compute SPY return series on its own dates (kept out of the covariance matrix)
+  // Compute SPY return series and RSI on its own dates (kept out of the covariance matrix)
   let spyData = null;
   const hasSpy = aligned.spy !== null && typeof aligned.spy === "object" && Array.isArray(aligned.spy.prices) === true;
   if (hasSpy === true) {
@@ -2514,12 +2691,14 @@ export function computeReturnsAndCovariance() {
     const spyReturns = computeDailyReturns(spyPrices);
     const spyStd = computeDailyStd(spyReturns);
     const spyAnnVol = computeAnnualizedVol(spyStd);
+    const spyRsi = computeRsi(spyPrices, 14);
     const spyReturnDates = aligned.spy.dates.slice(1);
     spyData = {
       dates: spyReturnDates,
       returns: spyReturns,
       dailyStd: spyStd,
-      annualizedVol: spyAnnVol
+      annualizedVol: spyAnnVol,
+      rsi: spyRsi
     };
   }
 
@@ -2563,6 +2742,7 @@ export function computeReturnsAndCovariance() {
     perTicker: perTickerData,
     covarianceMatrix: covarianceMatrix,
     covarianceTickers: [...constituentTickers],
+    rsi: rsiByTicker,
     spy: spyData
   };
 
@@ -2661,6 +2841,34 @@ export function renderVolatilitiesTable() {
     const varianceText = variance !== undefined ? variance.toFixed(6) : "--";
     const annVolText = annVol !== undefined ? `${(annVol * 100).toFixed(2)}%` : "--";
 
+    // RSI(14) data
+    const rsiData = (ind.rsi && ind.rsi[ticker]) || (ind.perTicker && ind.perTicker[ticker] && ind.perTicker[ticker].rsi);
+    let rsiCellHtml = "--";
+    let auditBtnHtml = "--";
+
+    if (rsiData !== null && rsiData !== undefined) {
+      const isInsufficient = rsiData.insufficientHistory === true;
+      if (isInsufficient === true) {
+        rsiCellHtml = `<span class="badge-insufficient">insufficient history</span>`;
+        auditBtnHtml = `<span class="price-mono" style="color: var(--apple-text-secondary); font-size: 11px;">(min 15 closes)</span>`;
+      } else {
+        const rsiVal = rsiData.currentRsi;
+        const isNum = typeof rsiVal === "number" && isNaN(rsiVal) === false;
+        if (isNum === true) {
+          const isOversold = rsiVal < 30;
+          const isOverbought = rsiVal > 70;
+          let badgeHtml = "";
+          if (isOversold === true) {
+            badgeHtml = `<span class="badge-rsi-oversold">Oversold</span>`;
+          } else if (isOverbought === true) {
+            badgeHtml = `<span class="badge-rsi-overbought">Overbought</span>`;
+          }
+          rsiCellHtml = `<span class="price-mono" style="font-weight: 700; color: var(--apple-text-primary);">${rsiVal.toFixed(2)}</span>${badgeHtml}`;
+          auditBtnHtml = `<button type="button" class="btn-inspect-rsi" data-ticker="${ticker}">Inspect Recursion</button>`;
+        }
+      }
+    }
+
     html += `
       <tr>
         <td>
@@ -2673,6 +2881,8 @@ export function renderVolatilitiesTable() {
         <td><span class="price-mono">${dStdText}</span></td>
         <td><span class="price-mono">${varianceText}</span></td>
         <td><span class="price-mono" style="font-weight: 700; color: var(--apple-text-primary);">${annVolText}</span></td>
+        <td>${rsiCellHtml}</td>
+        <td>${auditBtnHtml}</td>
       </tr>
     `;
   }
@@ -2683,6 +2893,24 @@ export function renderVolatilitiesTable() {
     const spyStd = ind.spy.dailyStd;
     const spyAnnVol = ind.spy.annualizedVol;
     const spyVar = spyStd * spyStd;
+
+    const spyRsi = (ind.spy && ind.spy.rsi) || (ind.rsi && ind.rsi["SPY"]);
+    let spyRsiCellHtml = "--";
+    let spyAuditBtnHtml = "--";
+    if (spyRsi !== null && spyRsi !== undefined) {
+      const isInsufficient = spyRsi.insufficientHistory === true;
+      if (isInsufficient === true) {
+        spyRsiCellHtml = `<span class="badge-insufficient">insufficient history</span>`;
+        spyAuditBtnHtml = `<span class="price-mono" style="color: var(--apple-text-secondary); font-size: 11px;">(min 15 closes)</span>`;
+      } else {
+        const spyVal = spyRsi.currentRsi;
+        const isNum = typeof spyVal === "number" && isNaN(spyVal) === false;
+        if (isNum === true) {
+          spyRsiCellHtml = `<span class="price-mono" style="font-weight: 700; color: var(--apple-blue);">${spyVal.toFixed(2)}</span>`;
+          spyAuditBtnHtml = `<button type="button" class="btn-inspect-rsi" data-ticker="SPY">Inspect Recursion</button>`;
+        }
+      }
+    }
 
     html += `
       <tr style="background: #fafbfc; border-top: 2px solid var(--apple-border);">
@@ -2697,6 +2925,8 @@ export function renderVolatilitiesTable() {
         <td><span class="price-mono">${(spyStd * 100).toFixed(2)}% (${spyStd.toFixed(6)})</span></td>
         <td><span class="price-mono">${spyVar.toFixed(6)}</span></td>
         <td><span class="price-mono" style="font-weight: 700; color: var(--apple-blue);">${(spyAnnVol * 100).toFixed(2)}%</span></td>
+        <td>${spyRsiCellHtml}</td>
+        <td>${spyAuditBtnHtml}</td>
       </tr>
     `;
   }
@@ -2823,6 +3053,348 @@ export function handleSliceDiagnostic() {
   }
 }
 
+let currentRsiSelectedTicker = null;
+
+/**
+ * Renders the RSI(14) inspection panel and full Wilder smoothing recursion audit table.
+ *
+ * @param {string} [targetTicker]
+ */
+export function renderRsiPanelUI(targetTicker) {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const ind = appState.indicatorSeries;
+  const aligned = appState.alignedData;
+  const selectEl = document.getElementById("rsi-ticker-select");
+  const quickEl = document.getElementById("rsi-quick-tickers");
+  const statsEl = document.getElementById("rsi-table-stats");
+  const tbodyEl = document.getElementById("rsi-recursion-tbody");
+
+  const cardTickerEl = document.getElementById("rsi-card-ticker");
+  const cardCurrentEl = document.getElementById("rsi-card-current");
+  const cardSeedGainEl = document.getElementById("rsi-card-seed-gain");
+  const cardSeedLossEl = document.getElementById("rsi-card-seed-loss");
+  const cardSeedRsiEl = document.getElementById("rsi-card-seed-rsi");
+  const cardFinalGainEl = document.getElementById("rsi-card-final-gain");
+  const cardFinalLossEl = document.getElementById("rsi-card-final-loss");
+  const cardClosesEl = document.getElementById("rsi-card-closes-count");
+
+  const hasInd = ind !== null && typeof ind === "object";
+  const hasAligned = aligned !== null && typeof aligned === "object";
+  const hasData = hasInd === true && hasAligned === true && Array.isArray(ind.tickers) === true && ind.tickers.length > 0;
+
+  if (hasData === false) {
+    if (selectEl !== null) {
+      selectEl.innerHTML = `<option value="">Run Stage 1 to calculate indicators</option>`;
+    }
+    if (quickEl !== null) {
+      quickEl.innerHTML = "";
+    }
+    if (statsEl !== null) {
+      statsEl.textContent = "";
+    }
+    if (tbodyEl !== null) {
+      tbodyEl.innerHTML = `<tr><td colspan="10" class="table-empty-row">Run the pipeline from Stage 1 to view RSI recursion series.</td></tr>`;
+    }
+    if (cardTickerEl !== null) {
+      cardTickerEl.textContent = "--";
+    }
+    if (cardCurrentEl !== null) {
+      cardCurrentEl.textContent = "--";
+    }
+    if (cardSeedGainEl !== null) {
+      cardSeedGainEl.textContent = "--";
+    }
+    if (cardSeedLossEl !== null) {
+      cardSeedLossEl.textContent = "--";
+    }
+    if (cardSeedRsiEl !== null) {
+      cardSeedRsiEl.textContent = "--";
+    }
+    if (cardFinalGainEl !== null) {
+      cardFinalGainEl.textContent = "--";
+    }
+    if (cardFinalLossEl !== null) {
+      cardFinalLossEl.textContent = "--";
+    }
+    if (cardClosesEl !== null) {
+      cardClosesEl.textContent = "--";
+    }
+    return;
+  }
+
+  const availableTickers = [...ind.tickers];
+  const hasSpy = ind.spy !== null && ind.spy !== undefined;
+  if (hasSpy === true) {
+    availableTickers.push("SPY");
+  }
+
+  let activeTicker = targetTicker;
+  const isTargetValid = typeof activeTicker === "string" && availableTickers.includes(activeTicker);
+  if (isTargetValid === false) {
+    const isCurrentValid = currentRsiSelectedTicker !== null && availableTickers.includes(currentRsiSelectedTicker);
+    if (isCurrentValid === true) {
+      activeTicker = currentRsiSelectedTicker;
+    } else {
+      activeTicker = availableTickers[0];
+    }
+  }
+  currentRsiSelectedTicker = activeTicker;
+
+  // Update select dropdown
+  if (selectEl !== null) {
+    let opts = "";
+    for (let i = 0; i < availableTickers.length; i += 1) {
+      const t = availableTickers[i];
+      const isSelected = t === activeTicker;
+      const isSpyTicker = t === "SPY";
+      const rsiObj = isSpyTicker === true ? (ind.spy && ind.spy.rsi) : (ind.rsi && ind.rsi[t]);
+      let rsiStr = "--";
+      if (rsiObj !== null && rsiObj !== undefined) {
+        const isNotInsufficient = rsiObj.insufficientHistory === false;
+        const hasRsiVal = rsiObj.currentRsi !== null && rsiObj.currentRsi !== undefined;
+        if (isNotInsufficient === true && hasRsiVal === true) {
+          rsiStr = rsiObj.currentRsi.toFixed(2);
+        }
+      }
+      opts += `<option value="${t}" ${isSelected ? "selected" : ""}>${t} (RSI: ${rsiStr})</option>`;
+    }
+    selectEl.innerHTML = opts;
+  }
+
+  // Update quick buttons
+  if (quickEl !== null) {
+    let quickHtml = `<span style="font-weight: 600; color: var(--apple-text-secondary); margin-right: 4px;">Quick Select:</span>`;
+    for (let i = 0; i < availableTickers.length; i += 1) {
+      const t = availableTickers[i];
+      const isSelected = t === activeTicker;
+      quickHtml += `<button type="button" class="btn-quick-ticker ${isSelected ? "active" : ""}" data-ticker="${t}">${t}</button>`;
+    }
+    quickEl.innerHTML = quickHtml;
+  }
+
+  // Retrieve closes, dates, and rsi object for activeTicker
+  let closes = [];
+  let dates = [];
+  let rsiObj = null;
+
+  const isActiveSpy = activeTicker === "SPY";
+  if (isActiveSpy === true) {
+    const hasSpyPrices = aligned.spy !== null && aligned.spy !== undefined && Array.isArray(aligned.spy.prices) === true;
+    closes = hasSpyPrices === true ? aligned.spy.prices : [];
+    const hasSpyDates = aligned.spy !== null && aligned.spy !== undefined && Array.isArray(aligned.spy.dates) === true;
+    dates = hasSpyDates === true ? aligned.spy.dates : [];
+    rsiObj = ind.spy && ind.spy.rsi;
+  } else {
+    closes = aligned.prices[activeTicker] || [];
+    dates = aligned.dates || [];
+    rsiObj = ind.rsi && ind.rsi[activeTicker];
+  }
+
+  if (statsEl !== null) {
+    statsEl.textContent = `${activeTicker}: ${closes.length} closes evaluated`;
+  }
+
+  if (cardTickerEl !== null) {
+    cardTickerEl.textContent = activeTicker;
+  }
+
+  const isRsiNull = rsiObj === null || rsiObj === undefined;
+  const isInsufficient = isRsiNull === true || rsiObj.insufficientHistory === true;
+
+  if (isInsufficient === true) {
+    if (cardCurrentEl !== null) {
+      cardCurrentEl.innerHTML = `<span class="badge-insufficient">insufficient history</span>`;
+    }
+    if (cardSeedGainEl !== null) {
+      cardSeedGainEl.textContent = "--";
+    }
+    if (cardSeedLossEl !== null) {
+      cardSeedLossEl.textContent = "--";
+    }
+    if (cardSeedRsiEl !== null) {
+      cardSeedRsiEl.textContent = "--";
+    }
+    if (cardFinalGainEl !== null) {
+      cardFinalGainEl.textContent = "--";
+    }
+    if (cardFinalLossEl !== null) {
+      cardFinalLossEl.textContent = "--";
+    }
+    if (cardClosesEl !== null) {
+      cardClosesEl.textContent = `${closes.length} closes (< 15 required)`;
+    }
+
+    if (tbodyEl !== null) {
+      tbodyEl.innerHTML = `<tr><td colspan="10" class="table-empty-row">Insufficient history for ${activeTicker}: ${closes.length} closes found, but Wilder RSI(14) requires at least 15 closes.</td></tr>`;
+    }
+    return;
+  }
+
+  // Valid RSI data
+  const currentRsi = rsiObj.currentRsi;
+  if (cardCurrentEl !== null) {
+    let badgeHtml = "";
+    const isOversold = currentRsi < 30;
+    const isOverbought = currentRsi > 70;
+    if (isOversold === true) {
+      badgeHtml = `<span class="badge-rsi-oversold">Oversold</span>`;
+    } else if (isOverbought === true) {
+      badgeHtml = `<span class="badge-rsi-overbought">Overbought</span>`;
+    } else {
+      badgeHtml = `<span class="badge-rsi-neutral">Neutral</span>`;
+    }
+    cardCurrentEl.innerHTML = `<span class="price-mono" style="font-weight: 700;">${currentRsi.toFixed(2)}</span> ${badgeHtml}`;
+  }
+
+  if (cardSeedGainEl !== null) {
+    const hasSeedGain = rsiObj.seedAvgGain !== null && rsiObj.seedAvgGain !== undefined;
+    cardSeedGainEl.textContent = hasSeedGain === true ? rsiObj.seedAvgGain.toFixed(6) : "--";
+  }
+  if (cardSeedLossEl !== null) {
+    const hasSeedLoss = rsiObj.seedAvgLoss !== null && rsiObj.seedAvgLoss !== undefined;
+    cardSeedLossEl.textContent = hasSeedLoss === true ? rsiObj.seedAvgLoss.toFixed(6) : "--";
+  }
+  if (cardSeedRsiEl !== null) {
+    const hasSeedRsi = rsiObj.rsiSeries.length > 0;
+    cardSeedRsiEl.textContent = hasSeedRsi === true ? rsiObj.rsiSeries[0].toFixed(2) : "--";
+  }
+  if (cardFinalGainEl !== null) {
+    const hasFinalGain = rsiObj.finalAvgGain !== null && rsiObj.finalAvgGain !== undefined;
+    cardFinalGainEl.textContent = hasFinalGain === true ? rsiObj.finalAvgGain.toFixed(6) : "--";
+  }
+  if (cardFinalLossEl !== null) {
+    const hasFinalLoss = rsiObj.finalAvgLoss !== null && rsiObj.finalAvgLoss !== undefined;
+    cardFinalLossEl.textContent = hasFinalLoss === true ? rsiObj.finalAvgLoss.toFixed(6) : "--";
+  }
+  if (cardClosesEl !== null) {
+    cardClosesEl.textContent = `${closes.length} closes (${rsiObj.rsiSeries.length} RSI sessions)`;
+  }
+
+  // Render the step-by-step table
+  if (tbodyEl !== null) {
+    let rowsHtml = "";
+    const runningGains = rsiObj.runningAvgGains;
+    const runningLosses = rsiObj.runningAvgLosses;
+    const rsiSeries = rsiObj.rsiSeries;
+
+    for (let i = 0; i < closes.length; i += 1) {
+      const sessionNum = i + 1;
+      const dateStr = dates[i] || `Session ${sessionNum}`;
+      const closeVal = closes[i];
+      const isFirstClose = i === 0;
+      const isSeedAccumulation = i >= 1 && i < 14;
+      const isSeedSession = i === 14;
+
+      if (isFirstClose === true) {
+        // Session 1: Baseline close, no prior session for change
+        rowsHtml += `
+          <tr class="seed-window">
+            <td><span class="price-mono">${sessionNum}</span></td>
+            <td><span class="date-mono">${dateStr}</span></td>
+            <td><span class="price-mono">${closeVal.toFixed(2)}</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary);">--</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary);">--</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary);">--</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary);">--</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary);">--</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary);">--</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary); font-size: 11px;">Baseline</span></td>
+          </tr>
+        `;
+      } else if (isSeedAccumulation === true) {
+        // Sessions 2 to 14: Accumulating first 14 changes for seed
+        const prevClose = closes[i - 1];
+        const change = closeVal - prevClose;
+        const isPos = change > 0;
+        const isNeg = change < 0;
+        const gain = isPos === true ? change : 0;
+        const loss = isNeg === true ? -change : 0;
+        const changeStr = change >= 0 ? "+" + change.toFixed(2) : change.toFixed(2);
+
+        rowsHtml += `
+          <tr class="seed-window">
+            <td><span class="price-mono">${sessionNum}</span></td>
+            <td><span class="date-mono">${dateStr}</span></td>
+            <td><span class="price-mono">${closeVal.toFixed(2)}</span></td>
+            <td><span class="price-mono">${changeStr}</span></td>
+            <td><span class="price-mono">${gain.toFixed(2)}</span></td>
+            <td><span class="price-mono">${loss.toFixed(2)}</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary);">--</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary);">--</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary);">--</span></td>
+            <td><span class="price-mono" style="color: var(--apple-text-secondary); font-size: 11px;">Seed Window (${i}/14)</span></td>
+          </tr>
+        `;
+      } else if (isSeedSession === true) {
+        // Session 15 (index 14): Seed initialized!
+        const prevClose = closes[i - 1];
+        const change = closeVal - prevClose;
+        const isPos = change > 0;
+        const isNeg = change < 0;
+        const gain = isPos === true ? change : 0;
+        const loss = isNeg === true ? -change : 0;
+        const seedGain = runningGains[0];
+        const seedLoss = runningLosses[0];
+        const isLossZero = seedLoss === 0;
+        const seedRs = isLossZero === true ? "Inf" : (seedGain / seedLoss).toFixed(4);
+        const rsiVal = rsiSeries[0];
+        const changeStr = change >= 0 ? "+" + change.toFixed(2) : change.toFixed(2);
+
+        rowsHtml += `
+          <tr class="seed-init">
+            <td><span class="price-mono" style="font-weight: 700;">${sessionNum}</span></td>
+            <td><span class="date-mono" style="font-weight: 600;">${dateStr}</span></td>
+            <td><span class="price-mono">${closeVal.toFixed(2)}</span></td>
+            <td><span class="price-mono">${changeStr}</span></td>
+            <td><span class="price-mono">${gain.toFixed(2)}</span></td>
+            <td><span class="price-mono">${loss.toFixed(2)}</span></td>
+            <td><span class="price-mono" style="font-weight: 700; color: var(--apple-blue);">${seedGain.toFixed(6)}</span></td>
+            <td><span class="price-mono" style="font-weight: 700; color: var(--apple-blue);">${seedLoss.toFixed(6)}</span></td>
+            <td><span class="price-mono">${seedRs}</span></td>
+            <td><span class="price-mono" style="font-weight: 700; color: var(--apple-blue);">${rsiVal.toFixed(2)} (Seed)</span></td>
+          </tr>
+        `;
+      } else {
+        // Sessions 16 onward: Wilder smoothing recursion
+        const prevClose = closes[i - 1];
+        const change = closeVal - prevClose;
+        const isPos = change > 0;
+        const isNeg = change < 0;
+        const gain = isPos === true ? change : 0;
+        const loss = isNeg === true ? -change : 0;
+        const seriesIdx = i - 14;
+        const curGain = runningGains[seriesIdx];
+        const curLoss = runningLosses[seriesIdx];
+        const isLossZero = curLoss === 0;
+        const curRs = isLossZero === true ? "Inf" : (curGain / curLoss).toFixed(4);
+        const curRsi = rsiSeries[seriesIdx];
+        const changeStr = change >= 0 ? "+" + change.toFixed(2) : change.toFixed(2);
+
+        rowsHtml += `
+          <tr>
+            <td><span class="price-mono">${sessionNum}</span></td>
+            <td><span class="date-mono">${dateStr}</span></td>
+            <td><span class="price-mono">${closeVal.toFixed(2)}</span></td>
+            <td><span class="price-mono">${changeStr}</span></td>
+            <td><span class="price-mono">${gain.toFixed(2)}</span></td>
+            <td><span class="price-mono">${loss.toFixed(2)}</span></td>
+            <td><span class="price-mono">${curGain.toFixed(6)}</span></td>
+            <td><span class="price-mono">${curLoss.toFixed(6)}</span></td>
+            <td><span class="price-mono">${curRs}</span></td>
+            <td><span class="price-mono" style="font-weight: 600; color: var(--apple-text-primary);">${curRsi.toFixed(2)}</span></td>
+          </tr>
+        `;
+      }
+    }
+
+    tbodyEl.innerHTML = rowsHtml;
+  }
+}
+
 /**
  * Renders all components in Stage 3 indicators.
  */
@@ -2830,6 +3402,7 @@ export function renderIndicatorsUI() {
   updateStage3SummaryMetrics();
   renderVolatilitiesTable();
   renderCovarianceMatrixTable();
+  renderRsiPanelUI();
 }
 
 /**
@@ -2845,6 +3418,7 @@ export function setupStage3() {
   const tabs = [
     { btnId: "tab-volatilities", panelId: "panel-volatilities" },
     { btnId: "tab-covariance", panelId: "panel-covariance" },
+    { btnId: "tab-rsi", panelId: "panel-rsi" },
     { btnId: "tab-slicer", panelId: "panel-slicer" }
   ];
 
@@ -2871,6 +3445,48 @@ export function setupStage3() {
           }
         });
       });
+    }
+  });
+
+  // RSI dropdown selection
+  const rsiSelect = document.getElementById("rsi-ticker-select");
+  if (rsiSelect !== null) {
+    rsiSelect.addEventListener("change", (evt) => {
+      const ticker = evt.target.value;
+      const hasTicker = typeof ticker === "string" && ticker.length > 0;
+      if (hasTicker === true) {
+        renderRsiPanelUI(ticker);
+      }
+    });
+  }
+
+  // Delegated clicks for inspect buttons and quick ticker buttons
+  document.addEventListener("click", (evt) => {
+    const target = evt.target;
+    if (target === null || target === undefined) {
+      return;
+    }
+    const isInspectBtn = target.matches(".btn-inspect-rsi");
+    if (isInspectBtn === true) {
+      const ticker = target.getAttribute("data-ticker");
+      const hasTicker = typeof ticker === "string" && ticker.length > 0;
+      if (hasTicker === true) {
+        const rsiTabBtn = document.getElementById("tab-rsi");
+        if (rsiTabBtn !== null) {
+          rsiTabBtn.click();
+        }
+        renderRsiPanelUI(ticker);
+      }
+      return;
+    }
+    const isQuickBtn = target.matches(".btn-quick-ticker");
+    if (isQuickBtn === true) {
+      const ticker = target.getAttribute("data-ticker");
+      const hasTicker = typeof ticker === "string" && ticker.length > 0;
+      if (hasTicker === true) {
+        renderRsiPanelUI(ticker);
+      }
+      return;
     }
   });
 
@@ -3256,6 +3872,8 @@ if (hasWindow === true) {
   window.handleSliceDiagnostic = handleSliceDiagnostic;
   window.renderIndicatorsUI = renderIndicatorsUI;
   window.setupStage3 = setupStage3;
+  window.computeRsi = computeRsi;
+  window.renderRsiPanelUI = renderRsiPanelUI;
 }
 
 function initializeApp() {
