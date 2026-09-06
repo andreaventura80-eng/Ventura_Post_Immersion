@@ -98,6 +98,7 @@ export const appState = {
     openRouter: ""
   },
   priceCache: {},
+  priceStatus: {},
   lastFetchTime: null,
   alignedData: null,
   indicatorSeries: null,
@@ -708,6 +709,8 @@ export function applyUniverseCSV(csvText) {
 
     renderUniverseUI();
     updatePreflightCard();
+    renderRawPricesTable();
+    updateAlignmentSummaryCard();
     showUniverseMessage("Universe updated successfully. 33 constituents and SPY benchmark loaded.", "success");
     return { success: true };
   } else {
@@ -796,6 +799,7 @@ export function resetToDefaultUniverse() {
 
   renderUniverseUI();
   updatePreflightCard();
+  renderRawPricesTable();
   showUniverseMessage("Reset to default 33-constituent universe and SPY benchmark.", "info");
 }
 
@@ -820,6 +824,7 @@ export function toggleConstituentTicker(ticker) {
 
   renderUniverseUI();
   updatePreflightCard();
+  renderRawPricesTable();
 }
 
 /**
@@ -1340,8 +1345,843 @@ export function updatePreflightCard() {
 }
 
 /**
+ * Quota tracking state for Twelve Data requests.
+ */
+export const quotaState = {
+  creditsLeft: null,
+  isEstimated: true,
+  lastResetMinute: Math.floor(Date.now() / 60000),
+  waitingForQuota: false,
+  countdownSeconds: 0,
+  countdownIntervalId: null
+};
+
+/**
+ * Returns today's date in America/New_York formatted as YYYY-MM-DD.
+ *
+ * @param {Date} [date]
+ * @returns {string}
+ */
+export function getTodayNYDateString(date = new Date()) {
+  const nyDateFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  });
+  return nyDateFormatter.format(date);
+}
+
+/**
+ * Checks if current time in America/New_York is before 16:00.
+ *
+ * @param {Date} [date]
+ * @returns {boolean}
+ */
+export function isBefore16NY(date = new Date()) {
+  const nyTimeFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false
+  });
+  const parts = nyTimeFormatter.formatToParts(date);
+  const hourPart = parts.find((p) => p.type === "hour");
+  const hour = parseInt(hourPart.value, 10);
+  const before16 = hour < 16;
+  return before16;
+}
+
+/**
+ * Returns the date one year before today in America/New_York (YYYY-MM-DD).
+ *
+ * @param {Date} [date]
+ * @returns {string}
+ */
+export function getOneYearAgoDateString(date = new Date()) {
+  const todayNY = getTodayNYDateString(date);
+  const parts = todayNY.split("-");
+  const prevYear = parseInt(parts[0], 10) - 1;
+  return `${prevYear}-${parts[1]}-${parts[2]}`;
+}
+
+/**
+ * Cleans a daily price series returned by Twelve Data:
+ * - Converts close string to number (prioritizing adjusted close)
+ * - Drops any bar whose close is null or NaN
+ * - Drops today's bar if current New York time is before 16:00
+ *
+ * @param {Array<object>} values
+ * @param {Date} [testDate]
+ * @returns {Array<{ datetime: string, close: number }>}
+ */
+export function cleanSymbolSeries(values, testDate = new Date()) {
+  const isArray = Array.isArray(values) === true;
+  if (isArray === false) {
+    return [];
+  }
+
+  const validBars = [];
+  for (let i = 0; i < values.length; i += 1) {
+    const bar = values[i];
+    const hasBar = bar !== null && typeof bar === "object";
+    if (hasBar === true) {
+      const rawClose = bar.adjusted_close !== undefined && bar.adjusted_close !== null ? bar.adjusted_close : bar.close;
+      const numClose = typeof rawClose === "number" ? rawClose : parseFloat(rawClose);
+      const isNumValid = isNaN(numClose) === false && numClose !== null;
+      const hasDate = typeof bar.datetime === "string" && bar.datetime.length >= 10;
+      if (isNumValid === true && hasDate === true) {
+        validBars.push({
+          datetime: bar.datetime.slice(0, 10),
+          close: numClose
+        });
+      }
+    }
+  }
+
+  // Sort ascending by plain date string
+  validBars.sort((a, b) => {
+    if (a.datetime < b.datetime) {
+      return -1;
+    }
+    if (a.datetime > b.datetime) {
+      return 1;
+    }
+    return 0;
+  });
+
+  // If the most recent bar carries today's date in America/New_York and time is before 16:00, drop that bar
+  const hasBars = validBars.length > 0;
+  if (hasBars === true) {
+    const todayNY = getTodayNYDateString(testDate);
+    const before16 = isBefore16NY(testDate);
+    const lastBar = validBars[validBars.length - 1];
+    const isTodaySession = lastBar.datetime === todayNY;
+    if (isTodaySession === true && before16 === true) {
+      validBars.pop();
+    }
+  }
+
+  return validBars;
+}
+
+/**
+ * Updates the quota display element in Stage 2.
+ */
+export function updateQuotaUI() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const badge = document.getElementById("stage-2-credits-status");
+  if (badge !== null) {
+    if (quotaState.waitingForQuota === true) {
+      badge.textContent = `waiting for quota (${quotaState.countdownSeconds}s)`;
+      badge.className = "meta-value badge-quota waiting";
+    } else if (quotaState.isEstimated === true) {
+      const left = quotaState.creditsLeft !== null ? quotaState.creditsLeft : (appState.settings.creditsPerMinute || 144);
+      badge.textContent = `${left} credits left (credit count estimated locally)`;
+      badge.className = "meta-value badge-quota";
+    } else {
+      badge.textContent = `${quotaState.creditsLeft} credits left`;
+      badge.className = "meta-value badge-quota";
+    }
+  }
+}
+
+/**
+ * Ensures enough credits remain before dispatching a request.
+ * Waits until the next clock minute if quota is exhausted.
+ *
+ * @param {number} neededCredits
+ * @returns {Promise<void>}
+ */
+export async function ensureQuotaAvailable(neededCredits) {
+  const quotaLimit = appState.settings.creditsPerMinute || 144;
+  const currentMinute = Math.floor(Date.now() / 60000);
+  if (currentMinute > quotaState.lastResetMinute) {
+    quotaState.lastResetMinute = currentMinute;
+    quotaState.creditsLeft = quotaLimit;
+    quotaState.isEstimated = true;
+  }
+  if (quotaState.creditsLeft === null) {
+    quotaState.creditsLeft = quotaLimit;
+    quotaState.isEstimated = true;
+  }
+
+  updateQuotaUI();
+
+  const hasEnough = quotaState.creditsLeft >= neededCredits;
+  if (hasEnough === true) {
+    return;
+  }
+
+  quotaState.waitingForQuota = true;
+  return new Promise((resolve) => {
+    const tick = () => {
+      const now = Date.now();
+      const msLeft = 60000 - (now % 60000);
+      const secsLeft = Math.ceil(msLeft / 1000);
+      quotaState.countdownSeconds = secsLeft;
+      updateQuotaUI();
+
+      const minuteNow = Math.floor(now / 60000);
+      if (minuteNow > quotaState.lastResetMinute) {
+        quotaState.lastResetMinute = minuteNow;
+        quotaState.creditsLeft = appState.settings.creditsPerMinute || 144;
+        quotaState.isEstimated = true;
+        quotaState.waitingForQuota = false;
+        if (quotaState.countdownIntervalId !== null) {
+          clearInterval(quotaState.countdownIntervalId);
+          quotaState.countdownIntervalId = null;
+        }
+        updateQuotaUI();
+        resolve();
+      }
+    };
+
+    tick();
+    quotaState.countdownIntervalId = setInterval(tick, 1000);
+  });
+}
+
+let activeRequestsCount = 0;
+const MAX_CONCURRENT_REQUESTS = 5;
+
+/**
+ * Performs a fetch with 10s timeout, concurrency cap of 5, and exactly one retry.
+ *
+ * @param {string} url
+ * @param {number} [timeoutMs]
+ * @returns {Promise<Response>}
+ */
+export async function fetchWithTimeoutAndRetry(url, timeoutMs = 10000) {
+  while (activeRequestsCount >= MAX_CONCURRENT_REQUESTS) {
+    await new Promise((res) => setTimeout(res, 50));
+  }
+  activeRequestsCount += 1;
+
+  const attemptFetch = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      return resp;
+    } catch (err) {
+      clearTimeout(timer);
+      throw err;
+    }
+  };
+
+  try {
+    try {
+      const res = await attemptFetch();
+      activeRequestsCount -= 1;
+      return res;
+    } catch (firstErr) {
+      await new Promise((res) => setTimeout(res, 1000));
+      const resRetry = await attemptFetch();
+      activeRequestsCount -= 1;
+      return resRetry;
+    }
+  } catch (finalErr) {
+    activeRequestsCount -= 1;
+    throw finalErr;
+  }
+}
+
+/**
+ * Displays or hides the Stage 2 global alert message.
+ *
+ * @param {string} message
+ * @param {"error" | "info"} [type]
+ */
+export function showStage2Alert(message, type = "error") {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const alertEl = document.getElementById("stage-2-global-alert");
+  if (alertEl !== null) {
+    if (message === "" || message === null) {
+      alertEl.className = "stage-2-alert hidden";
+      alertEl.textContent = "";
+    } else {
+      alertEl.className = `stage-2-alert alert-${type}`;
+      alertEl.textContent = message;
+    }
+  }
+}
+
+/**
+ * Updates status metadata for a ticker in appState.priceStatus.
+ *
+ * @param {string} ticker
+ * @param {"pending" | "fetching" | "done" | "failed" | "insufficient"} status
+ * @param {string} [message]
+ * @param {number|null} [rowCount]
+ * @param {string|null} [dateRange]
+ * @param {string|null} [note]
+ * @param {number|null} [latestClose]
+ */
+export function setTickerPriceStatus(ticker, status, message = "", rowCount = null, dateRange = null, note = null, latestClose = null) {
+  if (appState.priceStatus[ticker] === undefined) {
+    appState.priceStatus[ticker] = {};
+  }
+  const current = appState.priceStatus[ticker];
+  current.status = status;
+  if (message !== "") {
+    current.message = message;
+  }
+  if (rowCount !== null) {
+    current.rowCount = rowCount;
+  }
+  if (dateRange !== null) {
+    current.dateRange = dateRange;
+  }
+  if (note !== null) {
+    current.note = note;
+  }
+  if (latestClose !== null) {
+    current.latestClose = latestClose;
+  }
+}
+
+/**
+ * Renders the raw time series data table inside Stage 2.
+ */
+export function renderRawPricesTable() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const tbody = document.getElementById("raw-prices-tbody");
+  if (tbody === null) {
+    return;
+  }
+
+  const universe = appState.universe || DEFAULT_UNIVERSE;
+  const selectedSet = new Set(appState.selectedTickers || []);
+
+  const rows = [];
+  const processedTickers = new Set();
+  for (let i = 0; i < universe.length; i += 1) {
+    const item = universe[i];
+    if (processedTickers.has(item.ticker) === false) {
+      processedTickers.add(item.ticker);
+      rows.push(item);
+    }
+  }
+
+  let html = "";
+  for (let i = 0; i < rows.length; i += 1) {
+    const item = rows[i];
+    const ticker = item.ticker;
+    const sector = item.sector;
+    const isBenchmark = ticker === "SPY" || sector === "Benchmark";
+    const isSelected = isBenchmark === true || selectedSet.has(ticker) === true;
+
+    const info = appState.priceStatus[ticker] || { status: "pending" };
+    const cachedSeries = appState.priceCache[ticker];
+    const hasCached = Array.isArray(cachedSeries) === true && cachedSeries.length > 0;
+
+    let status = info.status || (hasCached === true ? "done" : (isSelected === true ? "pending" : "excluded"));
+    if (isSelected === false) {
+      status = "excluded";
+    }
+
+    let sessionsText = "—";
+    let dateRangeText = "—";
+    let latestCloseText = "—";
+
+    if (hasCached === true) {
+      const count = info.rowCount !== null && info.rowCount !== undefined ? info.rowCount : cachedSeries.length;
+      sessionsText = `${count} sessions`;
+      const firstD = cachedSeries[0].datetime;
+      const lastD = cachedSeries[cachedSeries.length - 1].datetime;
+      dateRangeText = info.dateRange ? info.dateRange : `${firstD} → ${lastD}`;
+      const lastBar = cachedSeries[cachedSeries.length - 1];
+      if (lastBar !== undefined && lastBar.close !== undefined) {
+        latestCloseText = `$${lastBar.close.toFixed(2)}`;
+      }
+    }
+
+    let statusClass = "status-pending";
+    let statusLabel = status;
+    if (status === "done") {
+      statusClass = "status-done";
+      statusLabel = "done";
+    } else if (status === "fetching") {
+      statusClass = "status-fetching";
+      statusLabel = "fetching...";
+    } else if (status === "failed") {
+      statusClass = "status-failed";
+      statusLabel = "failed";
+    } else if (status === "insufficient") {
+      statusClass = "status-insufficient";
+      statusLabel = info.message || "insufficient history";
+    } else if (status === "excluded") {
+      statusClass = "status-pending";
+      statusLabel = "deselected";
+    }
+
+    let noteText = info.note || info.message || "—";
+    if (isBenchmark === true && (noteText === "—" || noteText === "")) {
+      noteText = "Benchmark (rolling beta only)";
+    }
+
+    let constrainingHtml = noteText;
+    if (noteText.includes("Constrains") === true) {
+      constrainingHtml = `<span class="constraining-tag">${noteText}</span>`;
+    } else if (noteText.includes("insufficient") === true) {
+      constrainingHtml = `<span style="color: #b25e00; font-weight: 600;">${noteText}</span>`;
+    } else if (status === "failed") {
+      constrainingHtml = `<span style="color: #c91818; font-weight: 500;">${noteText}</span>`;
+    }
+
+    html += `
+      <tr id="row-price-${ticker}">
+        <td>
+          <div class="ticker-cell-group">
+            <span class="ticker-code">${ticker}</span>
+            ${isBenchmark === true ? '<span class="badge-benchmark">Benchmark</span>' : ''}
+          </div>
+        </td>
+        <td><span class="sector-text">${sector}</span></td>
+        <td><span class="status-tag ${statusClass}">${statusLabel}</span></td>
+        <td><span class="sessions-count">${sessionsText}</span></td>
+        <td><span class="date-range-text">${dateRangeText}</span></td>
+        <td><span class="price-mono">${latestCloseText}</span></td>
+        <td>${constrainingHtml}</td>
+      </tr>
+    `;
+  }
+
+  tbody.innerHTML = html;
+
+  const statsEl = document.getElementById("raw-data-table-stats");
+  if (statsEl !== null) {
+    statsEl.textContent = `${rows.length} total universe names (${selectedSet.size} selected constituents + 1 benchmark)`;
+  }
+}
+
+/**
+ * Updates the Stage 2 alignment summary card.
+ */
+export function updateAlignmentSummaryCard() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const badge = document.getElementById("alignment-status-badge");
+  const body = document.getElementById("alignment-card-body");
+  if (badge === null || body === null) {
+    return;
+  }
+
+  const aligned = appState.alignedData;
+  const isAligned = aligned !== null && Array.isArray(aligned.dates) === true && aligned.dates.length > 0;
+  if (isAligned === true) {
+    badge.textContent = "Done";
+    badge.className = "alignment-status-badge status-done";
+
+    const constituentKeys = Object.keys(aligned.prices);
+    const dates = aligned.dates;
+    const firstDate = dates[0];
+    const lastDate = dates[dates.length - 1];
+    const startConstraining = aligned.constrainingTickers && aligned.constrainingTickers.start ? aligned.constrainingTickers.start : [];
+    const endConstraining = aligned.constrainingTickers && aligned.constrainingTickers.end ? aligned.constrainingTickers.end : [];
+
+    const startNames = startConstraining.length > 0 ? startConstraining.join(", ") : "None";
+    const endNames = endConstraining.length > 0 ? endConstraining.join(", ") : "None";
+
+    body.innerHTML = `
+      <div class="alignment-details-grid">
+        <div class="alignment-metric-box">
+          <div class="alignment-metric-label">Aligned Sessions</div>
+          <div class="alignment-metric-value">${dates.length} days</div>
+        </div>
+        <div class="alignment-metric-box">
+          <div class="alignment-metric-label">Aligned Date Range</div>
+          <div class="alignment-metric-value" style="font-size: 13px;">${firstDate} → ${lastDate}</div>
+        </div>
+        <div class="alignment-metric-box">
+          <div class="alignment-metric-label">Aligned Constituents</div>
+          <div class="alignment-metric-value">${constituentKeys.length} names</div>
+        </div>
+        <div class="alignment-metric-box">
+          <div class="alignment-metric-label">SPY Benchmark Sessions</div>
+          <div class="alignment-metric-value">${aligned.spy ? aligned.spy.dates.length : 0} days</div>
+        </div>
+      </div>
+      <div class="alignment-constraining-note">
+        <strong>Constraining Constituents:</strong>
+        Start date (${firstDate}) constrained by <strong>${startNames}</strong>.
+        End date (${lastDate}) constrained by <strong>${endNames}</strong>.
+      </div>
+    `;
+  } else {
+    const stage2Status = appState.stageStatus[2];
+    if (stage2Status === "running") {
+      badge.textContent = "Running";
+      badge.className = "alignment-status-badge status-running";
+      body.innerHTML = `<p class="alignment-empty-text">Fetching adjusted daily closes and computing session alignment...</p>`;
+    } else if (stage2Status === "blocked") {
+      badge.textContent = "Blocked";
+      badge.className = "alignment-status-badge status-blocked";
+      body.innerHTML = `<p class="alignment-empty-text" style="color: #c91818;">Stage 2 execution blocked. Review error details above.</p>`;
+    } else {
+      badge.textContent = "Idle";
+      badge.className = "alignment-status-badge status-idle";
+      body.innerHTML = `<p class="alignment-empty-text">No price data fetched yet. Run the pipeline from Stage 1 to fetch and align prices.</p>`;
+    }
+  }
+}
+
+/**
+ * Aligns the cleaned daily series of all valid constituents on the intersection of dates,
+ * joins SPY to the aligned dates, updates alignedData, and transitions Stage 2 to done.
+ */
+export function alignAndCompleteStage2() {
+  const selectedConstituents = (appState.selectedTickers || []).filter((t) => t !== "SPY");
+  const validConstituents = [];
+
+  for (let i = 0; i < selectedConstituents.length; i += 1) {
+    const t = selectedConstituents[i];
+    const series = appState.priceCache[t];
+    const hasSeries = Array.isArray(series) === true;
+    if (hasSeries === false) {
+      setTickerPriceStatus(t, "failed", "No price data returned");
+      continue;
+    }
+    const historyIsSufficient = series.length >= 200;
+    if (historyIsSufficient === true) {
+      validConstituents.push(t);
+    } else {
+      setTickerPriceStatus(t, "insufficient", `insufficient history (${series.length} sessions)`, series.length);
+    }
+  }
+
+  const hasAnyConstituents = validConstituents.length > 0;
+  if (hasAnyConstituents === false) {
+    setStageStatus(2, "blocked");
+    showStage2Alert("No selected constituents have sufficient price history (>= 200 sessions).", "error");
+    updateAlignmentSummaryCard();
+    renderRawPricesTable();
+    return;
+  }
+
+  // Align the remaining constituents on the intersection of their dates
+  const datesByTicker = {};
+  const priceMapByTicker = {};
+
+  for (let i = 0; i < validConstituents.length; i += 1) {
+    const t = validConstituents[i];
+    const series = appState.priceCache[t];
+    datesByTicker[t] = series.map((b) => b.datetime);
+    priceMapByTicker[t] = new Map(series.map((b) => [b.datetime, b.close]));
+  }
+
+  let commonDatesSet = new Set(datesByTicker[validConstituents[0]]);
+  for (let i = 1; i < validConstituents.length; i += 1) {
+    const t = validConstituents[i];
+    const tSet = new Set(datesByTicker[t]);
+    const nextSet = new Set();
+    commonDatesSet.forEach((d) => {
+      if (tSet.has(d) === true) {
+        nextSet.add(d);
+      }
+    });
+    commonDatesSet = nextSet;
+  }
+
+  const commonDates = Array.from(commonDatesSet).sort();
+  const hasOverlap = commonDates.length > 0;
+  if (hasOverlap === false) {
+    setStageStatus(2, "blocked");
+    showStage2Alert("Constituents have no common session dates to align.", "error");
+    updateAlignmentSummaryCard();
+    renderRawPricesTable();
+    return;
+  }
+
+  // Name the ticker or tickers whose history constrains the intersection
+  const firstDate = commonDates[0];
+  const lastDate = commonDates[commonDates.length - 1];
+  const startConstraining = [];
+  const endConstraining = [];
+
+  for (let i = 0; i < validConstituents.length; i += 1) {
+    const t = validConstituents[i];
+    const tDates = datesByTicker[t];
+    const tFirst = tDates[0];
+    const tLast = tDates[tDates.length - 1];
+    if (tFirst === firstDate) {
+      startConstraining.push(t);
+    }
+    if (tLast === lastDate) {
+      endConstraining.push(t);
+    }
+  }
+
+  // Join SPY afterwards to the aligned constituent dates and keep only the dates SPY has
+  const spySeries = appState.priceCache["SPY"] || [];
+  const spyPriceMap = new Map(spySeries.map((b) => [b.datetime, b.close]));
+  const finalAlignedDates = commonDates.filter((d) => spyPriceMap.has(d) === true);
+
+  const hasSpyOverlap = finalAlignedDates.length > 0;
+  if (hasSpyOverlap === false) {
+    setStageStatus(2, "blocked");
+    showStage2Alert("SPY benchmark has no overlapping sessions with aligned constituents.", "error");
+    updateAlignmentSummaryCard();
+    renderRawPricesTable();
+    return;
+  }
+
+  // Build alignedData
+  const alignedPrices = {};
+  for (let i = 0; i < validConstituents.length; i += 1) {
+    const t = validConstituents[i];
+    const pMap = priceMapByTicker[t];
+    alignedPrices[t] = finalAlignedDates.map((d) => pMap.get(d));
+  }
+
+  const alignedSpy = {
+    dates: [...finalAlignedDates],
+    prices: finalAlignedDates.map((d) => spyPriceMap.get(d))
+  };
+
+  appState.alignedData = {
+    dates: finalAlignedDates,
+    prices: alignedPrices,
+    spy: alignedSpy,
+    constrainingTickers: {
+      start: startConstraining,
+      end: endConstraining
+    }
+  };
+
+  // Update status and notes for each valid constituent
+  for (let i = 0; i < validConstituents.length; i += 1) {
+    const t = validConstituents[i];
+    const isStart = startConstraining.includes(t) === true;
+    const isEnd = endConstraining.includes(t) === true;
+    let note = "Aligned";
+    if (isStart === true && isEnd === true) {
+      note = "Constrains start and end dates";
+    } else if (isStart === true) {
+      note = "Constrains start date";
+    } else if (isEnd === true) {
+      note = "Constrains end date";
+    }
+    setTickerPriceStatus(
+      t,
+      "done",
+      "",
+      finalAlignedDates.length,
+      `${finalAlignedDates[0]} → ${finalAlignedDates[finalAlignedDates.length - 1]}`,
+      note
+    );
+  }
+
+  // Update SPY status
+  setTickerPriceStatus(
+    "SPY",
+    "done",
+    "",
+    finalAlignedDates.length,
+    `${finalAlignedDates[0]} → ${finalAlignedDates[finalAlignedDates.length - 1]}`,
+    "Benchmark (joined to aligned dates)"
+  );
+
+  updateAlignmentSummaryCard();
+  renderRawPricesTable();
+
+  // Set stage 2 to done and stage 3 to running
+  setStageStatus(2, "done");
+  setStageStatus(3, "running");
+
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === true) {
+    const stageBody3 = document.getElementById("stage-body-3");
+    const stageHeader3 = document.getElementById("stage-header-3");
+    if (stageBody3 !== null && stageHeader3 !== null) {
+      stageBody3.classList.remove("collapsed");
+      stageHeader3.setAttribute("aria-expanded", "true");
+    }
+    const stageSection3 = document.getElementById("stage-section-3");
+    if (stageSection3 !== null) {
+      stageSection3.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+}
+
+/**
+ * Runs the Stage 2 price fetch and alignment pipeline.
+ *
+ * @param {boolean} [isRefresh]
+ */
+export async function runPriceFetchAndAlignment(isRefresh = false) {
+  if (isRefresh === true) {
+    appState.priceCache = {};
+    appState.alignedData = null;
+    appState.priceStatus = {};
+  }
+
+  showStage2Alert("");
+  setStageStatus(2, "running");
+  updateAlignmentSummaryCard();
+
+  const selectedConstituents = (appState.selectedTickers || []).filter((t) => t !== "SPY");
+  const allRequiredTickers = [...selectedConstituents, "SPY"];
+
+  const missingTickers = allRequiredTickers.filter((t) => {
+    const cached = appState.priceCache[t];
+    return Array.isArray(cached) === false || cached.length === 0;
+  });
+
+  const nothingMissing = missingTickers.length === 0;
+  if (nothingMissing === true) {
+    alignAndCompleteStage2();
+    return;
+  }
+
+  // Check quota before issuing request
+  await ensureQuotaAvailable(missingTickers.length);
+
+  // Mark all missing tickers as fetching
+  for (let i = 0; i < missingTickers.length; i += 1) {
+    setTickerPriceStatus(missingTickers[i], "fetching", "fetching...");
+  }
+  renderRawPricesTable();
+
+  const apiKey = (appState.keys.twelveData || "").trim();
+  const startDate = getOneYearAgoDateString();
+  const symbolsParam = missingTickers.join(",");
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbolsParam)}&interval=1day&start_date=${startDate}&order=asc&adjust=all&apikey=${encodeURIComponent(apiKey)}`;
+
+  let response;
+  try {
+    response = await fetchWithTimeoutAndRetry(url, 10000);
+  } catch (netErr) {
+    setStageStatus(2, "blocked");
+    for (let i = 0; i < missingTickers.length; i += 1) {
+      setTickerPriceStatus(missingTickers[i], "failed", "Network request failed");
+    }
+    showStage2Alert("Network request to Twelve Data failed. Please verify your connection.", "error");
+    updateAlignmentSummaryCard();
+    renderRawPricesTable();
+    return;
+  }
+
+  // Read api-credits-left response header if exposed
+  let creditsLeftHeader = null;
+  try {
+    creditsLeftHeader = response.headers.get("api-credits-left");
+  } catch (e) {}
+
+  const hasCreditsHeader = creditsLeftHeader !== null && creditsLeftHeader !== "" && isNaN(parseInt(creditsLeftHeader, 10)) === false;
+  if (hasCreditsHeader === true) {
+    quotaState.creditsLeft = parseInt(creditsLeftHeader, 10);
+    quotaState.isEstimated = false;
+  } else {
+    const currentCredits = quotaState.creditsLeft !== null ? quotaState.creditsLeft : (appState.settings.creditsPerMinute || 144);
+    quotaState.creditsLeft = Math.max(0, currentCredits - missingTickers.length);
+    quotaState.isEstimated = true;
+  }
+  updateQuotaUI();
+
+  let json;
+  try {
+    json = await response.json();
+  } catch (parseErr) {
+    setStageStatus(2, "blocked");
+    for (let i = 0; i < missingTickers.length; i += 1) {
+      setTickerPriceStatus(missingTickers[i], "failed", "Failed to parse API response");
+    }
+    showStage2Alert("Failed to parse JSON response from Twelve Data.", "error");
+    updateAlignmentSummaryCard();
+    renderRawPricesTable();
+    return;
+  }
+
+  // Check if provider rejected the key or refused browser request as a whole
+  const isGlobalError = json.status === "error" || json.code === 401 || json.code === 403;
+  const isKeyRejected = isGlobalError === true && (json.code === 401 || (typeof json.message === "string" && json.message.toLowerCase().includes("apikey")));
+  if (isKeyRejected === true) {
+    setStageStatus(2, "blocked");
+    for (let i = 0; i < missingTickers.length; i += 1) {
+      setTickerPriceStatus(missingTickers[i], "failed", "Twelve Data API key rejected");
+    }
+    showStage2Alert("Twelve Data API key was rejected. Please verify the Twelve Data API Key field in Stage 1 settings.", "error");
+    updateAlignmentSummaryCard();
+    renderRawPricesTable();
+    return;
+  }
+
+  // Quota exhaustion response (code 429) is a wait, not a failure
+  const isQuotaExhausted = json.code === 429 || (typeof json.message === "string" && json.message.toLowerCase().includes("run out of api credits"));
+  if (isQuotaExhausted === true) {
+    quotaState.creditsLeft = 0;
+    updateQuotaUI();
+    showStage2Alert("API credit quota reached for current minute. Waiting for next clock minute...", "info");
+    await ensureQuotaAvailable(missingTickers.length);
+    showStage2Alert("");
+    return runPriceFetchAndAlignment(false);
+  }
+
+  if (isGlobalError === true) {
+    setStageStatus(2, "blocked");
+    const errMsg = json.message || "Twelve Data request failed";
+    for (let i = 0; i < missingTickers.length; i += 1) {
+      setTickerPriceStatus(missingTickers[i], "failed", errMsg);
+    }
+    showStage2Alert(`Twelve Data API error: ${errMsg}`, "error");
+    updateAlignmentSummaryCard();
+    renderRawPricesTable();
+    return;
+  }
+
+  // Parse each symbol's series
+  for (let i = 0; i < missingTickers.length; i += 1) {
+    const t = missingTickers[i];
+    let symData = null;
+    if (json[t] !== undefined) {
+      symData = json[t];
+    } else if (json.meta !== undefined && json.meta.symbol === t) {
+      symData = json;
+    }
+
+    const hasSymData = symData !== null && typeof symData === "object";
+    const isSymError = hasSymData === true && (symData.status === "error" || symData.code !== undefined);
+    if (hasSymData === false || isSymError === true) {
+      const msg = hasSymData === true && symData.message ? symData.message : "Symbol not found in provider";
+      setTickerPriceStatus(t, "failed", msg);
+    } else {
+      const rawValues = symData.values;
+      const cleaned = cleanSymbolSeries(rawValues);
+      appState.priceCache[t] = cleaned;
+      setTickerPriceStatus(t, "done", "", cleaned.length);
+    }
+  }
+
+  appState.lastFetchTime = new Date().toISOString();
+  const hasDoc = typeof document !== "undefined";
+  if (hasDoc === true) {
+    const fetchTimeEl = document.getElementById("stage-2-last-fetch-time");
+    if (fetchTimeEl !== null) {
+      const nowTime = new Date().toLocaleTimeString();
+      fetchTimeEl.textContent = nowTime;
+    }
+  }
+
+  alignAndCompleteStage2();
+}
+
+/**
  * Handles clicking the Run Pipeline button.
- * Sets Stage 1 to "done" and Stage 2 to "running".
+ * Sets Stage 1 to "done" and Stage 2 to "running", then initiates price fetching and alignment.
  */
 export function handleRunPipeline() {
   const reasons = computePreflightChecks();
@@ -1364,9 +2204,32 @@ export function handleRunPipeline() {
         stageSection2.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     }
+
+    runPriceFetchAndAlignment(false);
   } else {
     updatePreflightCard();
   }
+}
+
+/**
+ * Sets up Stage 2 event listeners and initial raw data view.
+ */
+export function setupStage2() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const refreshBtn = document.getElementById("btn-refresh-prices");
+  if (refreshBtn !== null) {
+    refreshBtn.addEventListener("click", () => {
+      runPriceFetchAndAlignment(true);
+    });
+  }
+
+  updateQuotaUI();
+  updateAlignmentSummaryCard();
+  renderRawPricesTable();
 }
 
 /**
@@ -1700,6 +2563,21 @@ if (hasWindow === true) {
   window.handleRunPipeline = handleRunPipeline;
   window.renderSettingsUI = renderSettingsUI;
   window.setupSettingsPanel = setupSettingsPanel;
+  window.quotaState = quotaState;
+  window.getTodayNYDateString = getTodayNYDateString;
+  window.isBefore16NY = isBefore16NY;
+  window.getOneYearAgoDateString = getOneYearAgoDateString;
+  window.cleanSymbolSeries = cleanSymbolSeries;
+  window.updateQuotaUI = updateQuotaUI;
+  window.ensureQuotaAvailable = ensureQuotaAvailable;
+  window.fetchWithTimeoutAndRetry = fetchWithTimeoutAndRetry;
+  window.showStage2Alert = showStage2Alert;
+  window.setTickerPriceStatus = setTickerPriceStatus;
+  window.renderRawPricesTable = renderRawPricesTable;
+  window.updateAlignmentSummaryCard = updateAlignmentSummaryCard;
+  window.alignAndCompleteStage2 = alignAndCompleteStage2;
+  window.runPriceFetchAndAlignment = runPriceFetchAndAlignment;
+  window.setupStage2 = setupStage2;
 }
 
 function initializeApp() {
@@ -1708,6 +2586,7 @@ function initializeApp() {
   setupUniverseUpload();
   renderUniverseUI();
   setupSettingsPanel();
+  setupStage2();
 }
 
 const hasDocument = typeof document !== "undefined";

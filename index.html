@@ -380,8 +380,73 @@
       </div>
       <div class="stage-body" id="stage-body-2">
         <div class="stage-content" id="stage-content-2">
-          <div class="stage-placeholder">
-            <p class="placeholder-text">Stage 2: Price history controls will be rendered here.</p>
+          <div class="stage-2-container">
+            <!-- Stage 2 Control Bar -->
+            <div class="stage-2-toolbar" id="stage-2-toolbar">
+              <div class="stage-2-meta-group">
+                <div class="meta-item">
+                  <span class="meta-label">Twelve Data Quota:</span>
+                  <span class="meta-value badge-quota" id="stage-2-credits-status">144 / 144 credits left (estimated locally)</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Last Fetch:</span>
+                  <span class="meta-value" id="stage-2-last-fetch-time">Never</span>
+                </div>
+              </div>
+              <div class="stage-2-actions-group">
+                <button type="button" class="btn-refresh-prices" id="btn-refresh-prices">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                  <span>Refresh prices</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Stage 2 Message / Global Error banner -->
+            <div class="stage-2-alert hidden" id="stage-2-global-alert" role="alert"></div>
+
+            <!-- Alignment Summary Box -->
+            <div class="stage-2-alignment-card" id="stage-2-alignment-card">
+              <div class="alignment-card-header">
+                <h3 class="alignment-card-title">Session Alignment Summary</h3>
+                <span class="alignment-status-badge" id="alignment-status-badge">Idle</span>
+              </div>
+              <div class="alignment-card-body" id="alignment-card-body">
+                <p class="alignment-empty-text">No price data fetched yet. Run the pipeline from Stage 1 to fetch and align prices.</p>
+              </div>
+            </div>
+
+            <!-- Raw Data Table View -->
+            <div class="stage-2-table-wrapper">
+              <div class="table-header-bar">
+                <div class="table-title-group">
+                  <h3 class="table-title">Raw Time Series & Alignment Registry</h3>
+                  <span class="table-subtitle">Viewable before and after calculations run</span>
+                </div>
+                <div class="table-stats-group" id="raw-data-table-stats"></div>
+              </div>
+              <div class="table-scroll-container">
+                <table class="apple-data-table" id="raw-prices-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Ticker</th>
+                      <th scope="col">Sector</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Sessions</th>
+                      <th scope="col">Date Range</th>
+                      <th scope="col">Latest Close</th>
+                      <th scope="col">Constraint & Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody id="raw-prices-tbody">
+                    <!-- Populated dynamically -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>
