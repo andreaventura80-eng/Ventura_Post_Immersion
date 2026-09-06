@@ -3554,6 +3554,348 @@ tr.signal-drilldown-row td {
   background: #f8fafc;
 }
 
+/* Stage 6: Minimum Variance & Benchmarks */
+.stage-6-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 4px 0;
+}
+
+.stage-6-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.stage-6-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stage-6-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 0;
+}
+
+.stage-6-subtitle {
+  font-size: 13px;
+  color: #64748b;
+  margin: 0;
+}
+
+.stage-6-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+}
+
+.stage-6-metric-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.stage-6-metric-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stage-6-metric-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+}
+
+.stage-6-metric-badge {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #0284c7;
+  background: rgba(2, 132, 199, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.stage-6-metric-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.stage-6-metric-subtext {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.stage-6-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.stage-6-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.stage-6-card-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 0;
+}
+
+.stage-6-card-desc {
+  font-size: 12.5px;
+  color: #64748b;
+  margin: 2px 0 0 0;
+}
+
+.stage-6-table-wrapper {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.stage-6-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  text-align: left;
+}
+
+.stage-6-table th {
+  background: #f8fafc;
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #475569;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+.stage-6-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+  vertical-align: middle;
+}
+
+.stage-6-table tr:last-child td {
+  border-bottom: none;
+}
+
+.stage-6-table tr:hover td {
+  background: #f8fafc;
+}
+
+.stage-6-table tr.stage-6-row-candidate td {
+  background: rgba(16, 185, 129, 0.03);
+}
+
+.stage-6-table tr.stage-6-row-candidate:hover td {
+  background: rgba(16, 185, 129, 0.07);
+}
+
+.stage-6-table tfoot td {
+  font-weight: 600;
+  background: #f8fafc;
+  border-top: 2px solid #e2e8f0;
+}
+
+.stage-6-badge-feasible {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #dcfce7;
+  color: #15803d;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.stage-6-badge-infeasible {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.stage-6-badge-candidate {
+  display: inline-flex;
+  align-items: center;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.stage-6-badge-reference {
+  display: inline-flex;
+  align-items: center;
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.stage-6-alert-blocked {
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 10px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stage-6-alert-blocked-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #9f1239;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stage-6-alert-blocked-text {
+  font-size: 13px;
+  color: #881337;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.stage-6-alert-blocked-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.stage-6-alert-error {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  border-radius: 10px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stage-6-alert-error-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #b91c1c;
+  margin: 0;
+}
+
+.stage-6-alert-error-text {
+  font-size: 12.5px;
+  color: #991b1b;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.stage-6-weight-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stage-6-weight-bar-bg {
+  width: 70px;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.stage-6-weight-bar-fill {
+  height: 100%;
+  background: #0284c7;
+  border-radius: 9999px;
+}
+
+.stage-6-sector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.stage-6-sector-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stage-6-sector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stage-6-sector-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0;
+}
+
+.stage-6-sector-stat {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+
 
 
 

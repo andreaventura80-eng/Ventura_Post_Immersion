@@ -990,6 +990,13 @@ export function validateAndSetWeightCap(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+
+  const hasGated = Array.isArray(appState.gatedSurvivors) === true && appState.gatedSurvivors.length > 0;
+  const isStage5Done = appState.stageStatus[5] === "done";
+  if (hasGated === true && isStage5Done === true) {
+    runStage6Optimization();
+  }
+
   return true;
 }
 
@@ -1067,6 +1074,12 @@ export function validateAndSetInvestmentAmount(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+
+  const hasWeights = appState.weights !== null && typeof appState.weights === "object" && Array.isArray(appState.weights.minVariance) === true;
+  if (hasWeights === true) {
+    updateStage6InvestmentAmount(num);
+  }
+
   return true;
 }
 
@@ -1170,6 +1183,12 @@ export function validateAndSetRiskFreeRate(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+
+  const hasMetrics = appState.metrics !== null && typeof appState.metrics === "object" && appState.metrics.minVariance !== undefined;
+  if (hasMetrics === true) {
+    updateStage6RiskFreeRate(appState.settings.riskFreeRate);
+  }
+
   return true;
 }
 
@@ -6343,8 +6362,12 @@ export function applyTextGate() {
       blockedMsg = `${appState.stage5KeyRejectedMessage || "OpenRouter API Key field in Settings was rejected."} Regenerate labels or switch the gate to warn.`;
     }
     addGlobalBanner("stage-5-gate-blocked", blockedMsg, "error");
+    setStageStatus(6, "idle");
   } else {
     setStageStatus(5, "done");
+    if (gatedList.length > 0) {
+      runStage6Optimization();
+    }
   }
 
   renderStage5UI();
@@ -7567,7 +7590,7 @@ export function checkFeasibility(tickers, sectors = null, cap = undefined) {
   if (hasAtLeastTwoSectors === false) {
     return {
       feasible: false,
-      cause: "All names sit in one sector; at least two sectors are required to satisfy the 50% sector limit.",
+      cause: "All survivors sit in one sector; at least two sectors are required to satisfy the 50% sector limit. The screen must be relaxed or a name in another sector selected.",
       smallestFeasibleCap: null
     };
   }
@@ -8116,6 +8139,1046 @@ export function solveMinimumVariance(sigma, cap = undefined, sectorGroups = null
   };
 }
 
+/**
+ * ============================================================================
+ * STAGE 6: PORTFOLIO METRICS, BENCHMARKS, DOLLAR ALLOCATIONS, & CONSISTENCY
+ * ============================================================================
+ */
+
+/**
+ * Formats a number as whole US dollars with commas.
+ *
+ * @param {number} amount
+ * @returns {string} e.g. "$1,000,000"
+ */
+export function formatWholeDollars(amount) {
+  const isNum = typeof amount === "number" && isNaN(amount) === false;
+  if (isNum === false) {
+    return "$0";
+  }
+  const rounded = Math.round(amount);
+  return "$" + rounded.toLocaleString("en-US");
+}
+
+/**
+ * Computes portfolio return, volatility, Sharpe ratio, and daily series.
+ * In-sample: weights applied to trailing return series window.
+ *
+ * @param {number[]} weights
+ * @param {Record<string, number[]>} returnSeriesByTicker
+ * @param {string[]} tickers
+ * @param {number} [riskFreeRate]
+ * @returns {{ annualizedReturn: number, annualizedVolatility: number, sharpe: number, dailySeries: number[] }}
+ */
+export function computePortfolioSeries(weights, returnSeriesByTicker, tickers, riskFreeRate) {
+  const isWeightsArray = Array.isArray(weights) === true;
+  if (isWeightsArray === false || weights.length === 0) {
+    throw new Error("computePortfolioSeries: weights must be a non-empty array.");
+  }
+
+  // 1. Verify weights sum to 1 within 1e-9 tolerance
+  let weightSum = 0;
+  for (let i = 0; i < weights.length; i += 1) {
+    weightSum += weights[i];
+  }
+  const weightsAreValid = Math.abs(weightSum - 1.0) < 1e-9;
+  if (weightsAreValid === false) {
+    throw new Error(`Weights do not sum to 1 within 1e-9 (actual sum: ${weightSum}). Invalid weights cannot produce portfolio series.`);
+  }
+
+  // 2. Validate tickers and lengths
+  const isTickersArray = Array.isArray(tickers) === true;
+  const n = isTickersArray === true ? tickers.length : 0;
+  const hasTickers = n > 0;
+  if (hasTickers === false) {
+    throw new Error("computePortfolioSeries: tickers must be a non-empty array.");
+  }
+  const lengthsMatch = weights.length === n;
+  if (lengthsMatch === false) {
+    throw new Error(`Length mismatch: weights length (${weights.length}) does not match tickers length (${n}).`);
+  }
+
+  // 3. Validate return series alignment
+  const hasReturns = returnSeriesByTicker !== null && typeof returnSeriesByTicker === "object";
+  if (hasReturns === false) {
+    throw new Error("computePortfolioSeries: returnSeriesByTicker must be a valid object.");
+  }
+  const t0 = tickers[0];
+  const s0 = returnSeriesByTicker[t0];
+  const hasS0 = Array.isArray(s0) === true && s0.length > 0;
+  if (hasS0 === false) {
+    throw new Error(`Return series for ${t0} is missing or empty.`);
+  }
+  const T = s0.length;
+  for (let i = 1; i < n; i += 1) {
+    const sym = tickers[i];
+    const s = returnSeriesByTicker[sym];
+    const hasS = Array.isArray(s) === true;
+    const sMatches = hasS === true && s.length === T;
+    if (sMatches === false) {
+      throw new Error(`Return series length mismatch for ${sym}: expected ${T}, got ${hasS ? s.length : 0}.`);
+    }
+  }
+
+  // 4. Compute daily portfolio return series: weighted sum of survivor returns on each date
+  const dailySeries = new Array(T);
+  let sumDailyReturns = 0;
+  for (let d = 0; d < T; d += 1) {
+    let dayRet = 0;
+    for (let i = 0; i < n; i += 1) {
+      dayRet += weights[i] * returnSeriesByTicker[tickers[i]][d];
+    }
+    dailySeries[d] = dayRet;
+    sumDailyReturns += dayRet;
+  }
+
+  // 5. Annualized return: arithmetic mean of daily returns times 252
+  const meanDailyReturn = sumDailyReturns / T;
+  const annualizedReturn = meanDailyReturn * 252;
+
+  // 6. Annualized volatility: sample standard deviation (divide by n - 1) times sqrt(252)
+  let sumSqDiff = 0;
+  for (let d = 0; d < T; d += 1) {
+    const diff = dailySeries[d] - meanDailyReturn;
+    sumSqDiff += diff * diff;
+  }
+  const hasDf = T >= 2;
+  const sampleVariance = hasDf === true ? sumSqDiff / (T - 1) : 0;
+  const dailyStd = Math.sqrt(sampleVariance);
+  const annualizedVolatility = dailyStd * Math.sqrt(252);
+
+  // 7. Sharpe ratio: (annualizedReturn - riskFreeRate) / annualizedVolatility
+  let effectiveRf = 0.0391;
+  const hasRfParam = typeof riskFreeRate === "number" && isNaN(riskFreeRate) === false;
+  if (hasRfParam === true) {
+    effectiveRf = riskFreeRate;
+  } else {
+    const hasSettingsRf = appState.settings !== null && typeof appState.settings.riskFreeRate === "number";
+    if (hasSettingsRf === true) {
+      effectiveRf = appState.settings.riskFreeRate;
+    }
+  }
+  const hasVol = annualizedVolatility > 1e-12;
+  const sharpe = hasVol === true ? (annualizedReturn - effectiveRf) / annualizedVolatility : 0;
+
+  return {
+    annualizedReturn,
+    annualizedVolatility,
+    sharpe,
+    dailySeries
+  };
+}
+
+/**
+ * Computes dollar allocations: weight * investmentAmount, rounded to whole dollars,
+ * with the rounding residual assigned to the largest position so allocations sum to investmentAmount exactly.
+ * Asserts no negative dollar allocation.
+ *
+ * @param {number[]} weights
+ * @param {number} [investmentAmount]
+ * @returns {number[]} Whole dollar allocations summing exactly to investmentAmount
+ */
+export function computeDollarAllocations(weights, investmentAmount) {
+  const isArray = Array.isArray(weights) === true;
+  if (isArray === false || weights.length === 0) {
+    return [];
+  }
+
+  let amt = 1000000;
+  const hasAmtParam = typeof investmentAmount === "number" && isNaN(investmentAmount) === false && investmentAmount > 0;
+  if (hasAmtParam === true) {
+    amt = investmentAmount;
+  } else {
+    const hasSettingsAmt = appState.settings !== null && typeof appState.settings.investmentAmount === "number";
+    if (hasSettingsAmt === true) {
+      amt = appState.settings.investmentAmount;
+    }
+  }
+
+  const n = weights.length;
+  const allocations = new Array(n);
+  let totalAlloc = 0;
+  let maxWeight = -Infinity;
+  let maxIdx = 0;
+
+  for (let i = 0; i < n; i += 1) {
+    const rawDollar = weights[i] * amt;
+    const rounded = Math.round(rawDollar);
+    allocations[i] = rounded;
+    totalAlloc += rounded;
+
+    const isLarger = weights[i] > maxWeight;
+    if (isLarger === true) {
+      maxWeight = weights[i];
+      maxIdx = i;
+    }
+  }
+
+  // Assign rounding residual to the largest position
+  const residual = amt - totalAlloc;
+  allocations[maxIdx] += residual;
+
+  // Assert no negative allocation and exact sum
+  let verifiedSum = 0;
+  for (let i = 0; i < n; i += 1) {
+    const isNegative = allocations[i] < 0;
+    if (isNegative === true) {
+      throw new Error(`Negative dollar allocation at index ${i}: ${allocations[i]}`);
+    }
+    verifiedSum += allocations[i];
+  }
+
+  const sumMatches = verifiedSum === amt;
+  if (sumMatches === false) {
+    throw new Error(`Dollar allocations sum (${verifiedSum}) does not match investment amount (${amt}).`);
+  }
+
+  return allocations;
+}
+
+/**
+ * Computes inverse volatility weights for tickers: 1/vol, normalized to sum to 1.
+ *
+ * @param {string[]} tickers
+ * @param {Record<string, number[]>} [returnSeriesByTicker]
+ * @returns {number[]}
+ */
+export function computeInverseVolWeights(tickers, returnSeriesByTicker) {
+  const n = Array.isArray(tickers) === true ? tickers.length : 0;
+  if (n === 0) {
+    return [];
+  }
+
+  const raw = new Array(n);
+  let sumRaw = 0;
+
+  for (let i = 0; i < n; i += 1) {
+    const sym = tickers[i];
+    let vol = 0;
+    const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
+    const hasAnnVol = hasIndicators === true && appState.indicatorSeries.annualizedVol !== null && typeof appState.indicatorSeries.annualizedVol === "object";
+    if (hasAnnVol === true && typeof appState.indicatorSeries.annualizedVol[sym] === "number") {
+      vol = appState.indicatorSeries.annualizedVol[sym];
+    } else if (returnSeriesByTicker && Array.isArray(returnSeriesByTicker[sym]) === true) {
+      vol = computeAnnualizedVol(computeDailyStd(returnSeriesByTicker[sym]));
+    }
+    const effectiveVol = vol > 1e-12 ? vol : 1e-12;
+    const inv = 1 / effectiveVol;
+    raw[i] = inv;
+    sumRaw += inv;
+  }
+
+  const weights = new Array(n);
+  for (let i = 0; i < n; i += 1) {
+    weights[i] = sumRaw > 0 ? raw[i] / sumRaw : 1 / n;
+  }
+
+  return weights;
+}
+
+/**
+ * Computes Equal Weight and Inverse Volatility reference benchmarks,
+ * their feasibility, portfolio metrics, and dollar allocations.
+ *
+ * @param {string[]} tickers
+ * @param {Record<string, number[]>} returnSeriesByTicker
+ * @param {number} effectiveCap
+ * @param {Record<string, number[]>} sectorGroups
+ * @param {number} riskFreeRate
+ * @param {number} investmentAmount
+ * @returns {{ equalWeight: object, inverseVolatility: object }}
+ */
+export function computeBenchmarks(tickers, returnSeriesByTicker, effectiveCap, sectorGroups, riskFreeRate, investmentAmount) {
+  const n = Array.isArray(tickers) === true ? tickers.length : 0;
+  if (n === 0) {
+    return {
+      equalWeight: { weights: [], allocations: [], feasible: false, isReference: true },
+      inverseVolatility: { weights: [], allocations: [], feasible: false, isReference: true }
+    };
+  }
+
+  // 1. Equal Weight (1/n)
+  const ewWeights = new Array(n).fill(1 / n);
+  const isEWFeasible = validateWeights(ewWeights, effectiveCap, sectorGroups);
+  const metricsEW = computePortfolioSeries(ewWeights, returnSeriesByTicker, tickers, riskFreeRate);
+  const allocEW = computeDollarAllocations(ewWeights, investmentAmount);
+
+  // 2. Inverse Volatility (1/vol, normalized)
+  const ivWeights = computeInverseVolWeights(tickers, returnSeriesByTicker);
+  const isIVFeasible = validateWeights(ivWeights, effectiveCap, sectorGroups);
+  const metricsIV = computePortfolioSeries(ivWeights, returnSeriesByTicker, tickers, riskFreeRate);
+  const allocIV = computeDollarAllocations(ivWeights, investmentAmount);
+
+  return {
+    equalWeight: {
+      weights: ewWeights,
+      allocations: allocEW,
+      annualizedReturn: metricsEW.annualizedReturn,
+      annualizedVolatility: metricsEW.annualizedVolatility,
+      sharpe: metricsEW.sharpe,
+      dailySeries: metricsEW.dailySeries,
+      feasible: isEWFeasible,
+      label: "Equal Weight",
+      isReference: true
+    },
+    inverseVolatility: {
+      weights: ivWeights,
+      allocations: allocIV,
+      annualizedReturn: metricsIV.annualizedReturn,
+      annualizedVolatility: metricsIV.annualizedVolatility,
+      sharpe: metricsIV.sharpe,
+      dailySeries: metricsIV.dailySeries,
+      feasible: isIVFeasible,
+      label: "Inverse Volatility",
+      isReference: true
+    }
+  };
+}
+
+/**
+ * Consistency check:
+ * Annualized volatility of minimum variance <= feasible benchmarks volatility (tolerance 1e-6).
+ * Benchmarks that breach the cap or the sector limit are outside the feasible set and excluded from the check.
+ * If breached, flags an upstream error naming the three volatilities.
+ *
+ * @param {object|number} metricsMV
+ * @param {object|number} metricsEW
+ * @param {object|number} metricsIV
+ * @param {boolean} [isEWFeasible]
+ * @param {boolean} [isIVFeasible]
+ * @returns {{ passed: boolean, error: string|null, volatilities: { minVariance: number, equalWeight: number, inverseVolatility: number } }}
+ */
+export function checkConsistency(metricsMV, metricsEW, metricsIV, isEWFeasible, isIVFeasible) {
+  const volMV = typeof metricsMV === "number" ? metricsMV : (metricsMV && typeof metricsMV.annualizedVolatility === "number" ? metricsMV.annualizedVolatility : 0);
+  const volEW = typeof metricsEW === "number" ? metricsEW : (metricsEW && typeof metricsEW.annualizedVolatility === "number" ? metricsEW.annualizedVolatility : 0);
+  const volIV = typeof metricsIV === "number" ? metricsIV : (metricsIV && typeof metricsIV.annualizedVolatility === "number" ? metricsIV.annualizedVolatility : 0);
+
+  const ewFeas = typeof isEWFeasible === "boolean" ? isEWFeasible : (metricsEW && metricsEW.feasible === true);
+  const ivFeas = typeof isIVFeasible === "boolean" ? isIVFeasible : (metricsIV && metricsIV.feasible === true);
+
+  const mvExceedsEW = (ewFeas === true) && (volMV > volEW + 1e-6);
+  const mvExceedsIV = (ivFeas === true) && (volMV > volIV + 1e-6);
+
+  const passed = (mvExceedsEW === false) && (mvExceedsIV === false);
+  const volMVStr = (volMV * 100).toFixed(4) + "%";
+  const volEWStr = (volEW * 100).toFixed(4) + "%";
+  const volIVStr = (volIV * 100).toFixed(4) + "%";
+
+  if (passed === false) {
+    const errorMsg = `Upstream error: Minimum variance annualized volatility (${volMVStr}) exceeds feasible benchmark volatility. Minimum Variance: ${volMVStr}, Equal Weight: ${volEWStr}, Inverse Volatility: ${volIVStr}.`;
+    return {
+      passed: false,
+      error: errorMsg,
+      volatilities: {
+        minVariance: volMV,
+        equalWeight: volEW,
+        inverseVolatility: volIV
+      }
+    };
+  }
+
+  return {
+    passed: true,
+    error: null,
+    volatilities: {
+      minVariance: volMV,
+      equalWeight: volEW,
+      inverseVolatility: volIV
+    }
+  };
+}
+
+/**
+ * Updates dollar allocations when investment capital setting changes.
+ * Changes every dollar figure and no weight, volatility, return, or Sharpe.
+ *
+ * @param {number} investmentAmount
+ */
+export function updateStage6InvestmentAmount(investmentAmount) {
+  const hasWeights = appState.weights !== null && typeof appState.weights === "object";
+  if (hasWeights === false) {
+    return;
+  }
+
+  const amt = typeof investmentAmount === "number" && isNaN(investmentAmount) === false && investmentAmount > 0
+    ? investmentAmount
+    : ((appState.settings && typeof appState.settings.investmentAmount === "number") ? appState.settings.investmentAmount : 1000000);
+
+  if (Array.isArray(appState.weights.minVariance) === true) {
+    const allocMV = computeDollarAllocations(appState.weights.minVariance, amt);
+    appState.weights.allocations.minVariance = allocMV;
+    appState.weights.minVarianceAllocations = allocMV;
+    if (appState.metrics && appState.metrics.minVariance) {
+      appState.metrics.minVariance.allocations = allocMV;
+    }
+  }
+
+  if (Array.isArray(appState.weights.equalWeight) === true) {
+    const allocEW = computeDollarAllocations(appState.weights.equalWeight, amt);
+    appState.weights.allocations.equalWeight = allocEW;
+    appState.weights.equalWeightAllocations = allocEW;
+    if (appState.metrics && appState.metrics.equalWeight) {
+      appState.metrics.equalWeight.allocations = allocEW;
+    }
+  }
+
+  if (Array.isArray(appState.weights.inverseVolatility) === true) {
+    const allocIV = computeDollarAllocations(appState.weights.inverseVolatility, amt);
+    appState.weights.allocations.inverseVolatility = allocIV;
+    appState.weights.inverseVolatilityAllocations = allocIV;
+    if (appState.metrics && appState.metrics.inverseVolatility) {
+      appState.metrics.inverseVolatility.allocations = allocIV;
+    }
+  }
+
+  appState.allocations = appState.weights.allocations;
+  renderStage6UI();
+}
+
+/**
+ * Updates Sharpe ratio when riskFreeRate setting changes.
+ * Affects only Sharpe ratio and no weight, return, volatility, or dollar allocation.
+ *
+ * @param {number} riskFreeRate
+ */
+export function updateStage6RiskFreeRate(riskFreeRate) {
+  const hasMetrics = appState.metrics !== null && typeof appState.metrics === "object";
+  if (hasMetrics === false) {
+    return;
+  }
+
+  const rf = typeof riskFreeRate === "number" && isNaN(riskFreeRate) === false
+    ? riskFreeRate
+    : ((appState.settings && typeof appState.settings.riskFreeRate === "number") ? appState.settings.riskFreeRate : 0.0391);
+
+  if (appState.metrics.minVariance && typeof appState.metrics.minVariance.annualizedVolatility === "number") {
+    const vol = appState.metrics.minVariance.annualizedVolatility;
+    const ret = appState.metrics.minVariance.annualizedReturn;
+    appState.metrics.minVariance.sharpe = vol > 1e-12 ? (ret - rf) / vol : 0;
+  }
+
+  if (appState.metrics.equalWeight && typeof appState.metrics.equalWeight.annualizedVolatility === "number") {
+    const vol = appState.metrics.equalWeight.annualizedVolatility;
+    const ret = appState.metrics.equalWeight.annualizedReturn;
+    appState.metrics.equalWeight.sharpe = vol > 1e-12 ? (ret - rf) / vol : 0;
+  }
+
+  if (appState.metrics.inverseVolatility && typeof appState.metrics.inverseVolatility.annualizedVolatility === "number") {
+    const vol = appState.metrics.inverseVolatility.annualizedVolatility;
+    const ret = appState.metrics.inverseVolatility.annualizedReturn;
+    appState.metrics.inverseVolatility.sharpe = vol > 1e-12 ? (ret - rf) / vol : 0;
+  }
+
+  renderStage6UI();
+}
+
+/**
+ * Runs the complete Stage 6 minimum variance optimization and benchmark evaluation.
+ * Stores weights, metrics, allocations, and feasibility flags in appState.weights and appState.metrics.
+ * Sets stage 6 to done (or blocked if infeasible).
+ */
+export function runStage6Optimization() {
+  removeGlobalBanner("stage-6-blocked");
+  removeGlobalBanner("stage-6-consistency-error");
+
+  const survivors = Array.isArray(appState.gatedSurvivors) === true ? appState.gatedSurvivors : [];
+  const n = survivors.length;
+  if (n === 0) {
+    setStageStatus(6, "idle");
+    renderStage6UI();
+    return;
+  }
+
+  const effectiveCap = typeof appState.settings.weightCap === "number" ? appState.settings.weightCap : 0.25;
+  const effectiveRf = typeof appState.settings.riskFreeRate === "number" ? appState.settings.riskFreeRate : 0.0391;
+  const effectiveAmt = typeof appState.settings.investmentAmount === "number" ? appState.settings.investmentAmount : 1000000;
+
+  // 1. Sector groups & Feasibility check
+  const sectorGroups = getGatedSectorGroups();
+  const feasResult = checkFeasibility(survivors, null, effectiveCap);
+
+  if (feasResult.feasible === false) {
+    const causeMsg = feasResult.cause || "Portfolio optimization problem is infeasible under current constraints.";
+    setStageStatus(6, "blocked");
+    appState.weights = {
+      minVariance: null,
+      equalWeight: null,
+      inverseVolatility: null,
+      allocations: null,
+      feasibility: {
+        minVariance: false,
+        equalWeight: false,
+        inverseVolatility: false
+      }
+    };
+    appState.metrics = {
+      blocked: true,
+      cause: causeMsg
+    };
+    addGlobalBanner("stage-6-blocked", causeMsg, "error");
+    renderStage6UI();
+    return;
+  }
+
+  // 2. Sliced covariance matrix
+  const sigma = sliceCovariance(survivors);
+
+  // 3. Solve Minimum Variance by projected gradient descent
+  const solverRes = solveMinimumVariance(sigma, effectiveCap, sectorGroups);
+  if (solverRes.feasible === false) {
+    const causeMsg = solverRes.cause || solverRes.message || "Optimization solver failed to find feasible weights.";
+    setStageStatus(6, "blocked");
+    appState.weights = {
+      minVariance: null,
+      equalWeight: null,
+      inverseVolatility: null,
+      allocations: null,
+      feasibility: {
+        minVariance: false,
+        equalWeight: false,
+        inverseVolatility: false
+      }
+    };
+    appState.metrics = {
+      blocked: true,
+      cause: causeMsg
+    };
+    addGlobalBanner("stage-6-blocked", causeMsg, "error");
+    renderStage6UI();
+    return;
+  }
+
+  // 4. Compute metrics for Minimum Variance
+  const returnSeries = appState.indicatorSeries && appState.indicatorSeries.returns ? appState.indicatorSeries.returns : null;
+  if (!returnSeries) {
+    throw new Error("Missing indicatorSeries.returns for survivor tickers.");
+  }
+  const metricsMV = computePortfolioSeries(solverRes.weights, returnSeries, survivors, effectiveRf);
+  const allocMV = computeDollarAllocations(solverRes.weights, effectiveAmt);
+
+  // Volatility alignment check: sqrt(solver objective * 252) within 1e-6
+  const solverVol = Math.sqrt(solverRes.objective * 252);
+  const volDiff = Math.abs(metricsMV.annualizedVolatility - solverVol);
+  if (volDiff > 1e-6) {
+    console.warn(`Annualized volatility alignment check: metricsMV=${metricsMV.annualizedVolatility}, solverVol=${solverVol}, diff=${volDiff}`);
+  }
+
+  // 5. Benchmarks
+  const bench = computeBenchmarks(survivors, returnSeries, effectiveCap, sectorGroups, effectiveRf, effectiveAmt);
+
+  // 6. Consistency Check
+  const consistencyResult = checkConsistency(
+    metricsMV,
+    bench.equalWeight,
+    bench.inverseVolatility,
+    bench.equalWeight.feasible,
+    bench.inverseVolatility.feasible
+  );
+
+  if (consistencyResult.passed === false) {
+    addGlobalBanner("stage-6-consistency-error", consistencyResult.error, "error");
+  }
+
+  // 7. Store state
+  appState.weights = {
+    minVariance: solverRes.weights,
+    equalWeight: bench.equalWeight.weights,
+    inverseVolatility: bench.inverseVolatility.weights,
+    tickers: [...survivors],
+    allocations: {
+      minVariance: allocMV,
+      equalWeight: bench.equalWeight.allocations,
+      inverseVolatility: bench.inverseVolatility.allocations
+    },
+    feasibility: {
+      minVariance: true,
+      equalWeight: bench.equalWeight.feasible,
+      inverseVolatility: bench.inverseVolatility.feasible
+    },
+    minVarianceAllocations: allocMV,
+    equalWeightAllocations: bench.equalWeight.allocations,
+    inverseVolatilityAllocations: bench.inverseVolatility.allocations,
+    isMinVarianceFeasible: true,
+    isEqualWeightFeasible: bench.equalWeight.feasible,
+    isInverseVolatilityFeasible: bench.inverseVolatility.feasible
+  };
+  appState.allocations = appState.weights.allocations;
+
+  appState.metrics = {
+    minVariance: {
+      weights: solverRes.weights,
+      allocations: allocMV,
+      annualizedReturn: metricsMV.annualizedReturn,
+      annualizedVolatility: metricsMV.annualizedVolatility,
+      sharpe: metricsMV.sharpe,
+      dailySeries: metricsMV.dailySeries,
+      feasible: true,
+      converged: solverRes.converged,
+      iterations: solverRes.iterations,
+      objective: solverRes.objective,
+      label: "Candidate Portfolio",
+      isReference: false
+    },
+    equalWeight: bench.equalWeight,
+    inverseVolatility: bench.inverseVolatility,
+    consistencyCheck: consistencyResult,
+    tickers: [...survivors]
+  };
+
+  if (consistencyResult.passed === false) {
+    appState.metrics.error = consistencyResult.error;
+    appState.metrics.consistencyError = consistencyResult.error;
+  }
+
+  setStageStatus(6, "done");
+  renderStage6UI();
+}
+
+/**
+ * Renders the Stage 6 user interface into #stage-content-6.
+ */
+export function renderStage6UI() {
+  const hasDoc = typeof document !== "undefined";
+  if (hasDoc === false) {
+    return;
+  }
+  const container = document.getElementById("stage-content-6");
+  if (container === null) {
+    return;
+  }
+
+  const currentStatus = appState.stageStatus[6] || "idle";
+  const survivors = Array.isArray(appState.gatedSurvivors) === true ? appState.gatedSurvivors : [];
+  const n = survivors.length;
+
+  if (currentStatus === "idle") {
+    container.innerHTML = `
+      <div class="stage-placeholder">
+        <p class="placeholder-text">
+          Stage 6 will run automatically after Stage 5 text gating passes survivors, or you can trigger optimization below.
+        </p>
+        <button type="button" class="btn-primary" id="btn-reoptimize-stage6" style="margin-top: 12px;" ${n === 0 ? "disabled" : ""}>
+          Run Minimum Variance Optimizer
+        </button>
+      </div>
+    `;
+    setupStage6Events();
+    return;
+  }
+
+  if (currentStatus === "blocked") {
+    const causeText = (appState.metrics && appState.metrics.cause) || "Optimization problem is infeasible under current constraints.";
+    container.innerHTML = `
+      <div class="stage-6-container">
+        <div class="stage-6-alert-blocked">
+          <div class="stage-6-alert-blocked-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            Stage 6 Blocked: Portfolio Optimization Infeasible
+          </div>
+          <p class="stage-6-alert-blocked-text">
+            ${escapeHtml(causeText)}
+          </p>
+          <div class="stage-6-alert-blocked-actions">
+            <button type="button" class="btn-primary" id="btn-stage6-open-settings" style="font-size: 12px; padding: 6px 14px;">
+              Open Settings
+            </button>
+            <button type="button" class="btn-secondary" id="btn-reoptimize-stage6" style="font-size: 12px; padding: 6px 14px;">
+              Re-check Feasibility
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    setupStage6Events();
+    return;
+  }
+
+  // Done status
+  const metrics = appState.metrics || {};
+  const weights = appState.weights || {};
+  const mv = metrics.minVariance || {};
+  const ew = metrics.equalWeight || {};
+  const iv = metrics.inverseVolatility || {};
+  const consistency = metrics.consistencyCheck || { passed: true };
+
+  const effectiveCap = typeof appState.settings.weightCap === "number" ? appState.settings.weightCap : 0.25;
+  const effectiveRf = typeof appState.settings.riskFreeRate === "number" ? appState.settings.riskFreeRate : 0.0391;
+  const effectiveAmt = typeof appState.settings.investmentAmount === "number" ? appState.settings.investmentAmount : 1000000;
+
+  const volMV = typeof mv.annualizedVolatility === "number" ? (mv.annualizedVolatility * 100).toFixed(2) + "%" : "0.00%";
+  const retMV = typeof mv.annualizedReturn === "number" ? (mv.annualizedReturn * 100).toFixed(2) + "%" : "0.00%";
+  const sharpeMV = typeof mv.sharpe === "number" ? mv.sharpe.toFixed(2) : "0.00";
+
+  const volEW = typeof ew.annualizedVolatility === "number" ? (ew.annualizedVolatility * 100).toFixed(2) + "%" : "0.00%";
+  const retEW = typeof ew.annualizedReturn === "number" ? (ew.annualizedReturn * 100).toFixed(2) + "%" : "0.00%";
+  const sharpeEW = typeof ew.sharpe === "number" ? ew.sharpe.toFixed(2) : "0.00";
+
+  const volIV = typeof iv.annualizedVolatility === "number" ? (iv.annualizedVolatility * 100).toFixed(2) + "%" : "0.00%";
+  const retIV = typeof iv.annualizedReturn === "number" ? (iv.annualizedReturn * 100).toFixed(2) + "%" : "0.00%";
+  const sharpeIV = typeof iv.sharpe === "number" ? iv.sharpe.toFixed(2) : "0.00";
+
+  // Consistency error banner
+  let consistencyHtml = "";
+  if (consistency.passed === false && consistency.error) {
+    consistencyHtml = `
+      <div class="stage-6-alert-error" style="margin-bottom: 16px;">
+        <div class="stage-6-alert-error-title">Consistency Check Warning</div>
+        <p class="stage-6-alert-error-text">${escapeHtml(consistency.error)}</p>
+      </div>
+    `;
+  }
+
+  // Constituent table rows
+  let constituentRowsHtml = "";
+  let totalMVDollars = 0;
+  let totalEWDollars = 0;
+  let totalIVDollars = 0;
+  let totalMVWeight = 0;
+
+  const sectorTotals = {};
+
+  for (let i = 0; i < n; i += 1) {
+    const sym = survivors[i];
+    const item = appState.universe.find((u) => u.ticker === sym) || { name: sym, sector: "Unknown" };
+    const labelEntry = appState.labels && appState.labels[sym] ? appState.labels[sym] : { label: "Unclassified" };
+
+    const wMV = Array.isArray(mv.weights) === true ? mv.weights[i] : 0;
+    const dMV = Array.isArray(mv.allocations) === true ? mv.allocations[i] : 0;
+    const wEW = Array.isArray(ew.weights) === true ? ew.weights[i] : 0;
+    const dEW = Array.isArray(ew.allocations) === true ? ew.allocations[i] : 0;
+    const wIV = Array.isArray(iv.weights) === true ? iv.weights[i] : 0;
+    const dIV = Array.isArray(iv.allocations) === true ? iv.allocations[i] : 0;
+
+    totalMVWeight += wMV;
+    totalMVDollars += dMV;
+    totalEWDollars += dEW;
+    totalIVDollars += dIV;
+
+    const sectorName = item.sector || "Unknown";
+    if (!sectorTotals[sectorName]) {
+      sectorTotals[sectorName] = { weight: 0, dollars: 0, count: 0 };
+    }
+    sectorTotals[sectorName].weight += wMV;
+    sectorTotals[sectorName].dollars += dMV;
+    sectorTotals[sectorName].count += 1;
+
+    const wMVPercent = (wMV * 100).toFixed(2);
+    const barWidth = Math.min(100, Math.round((wMV / effectiveCap) * 100));
+
+    constituentRowsHtml += `
+      <tr>
+        <td style="color: #64748b; font-size: 11px;">${i + 1}</td>
+        <td>
+          <span style="font-weight: 700; color: #0f172a;">${escapeHtml(sym)}</span>
+        </td>
+        <td>
+          <div style="font-weight: 500;">${escapeHtml(item.name)}</div>
+          <div style="font-size: 11px; color: #64748b;">${escapeHtml(item.sector)}</div>
+        </td>
+        <td>
+          <span class="badge-status-neutral" style="font-size: 11px;">${escapeHtml(labelEntry.label || "Survivor")}</span>
+        </td>
+        <td>
+          <div class="stage-6-weight-bar-container">
+            <span style="font-weight: 600; min-width: 48px;">${wMVPercent}%</span>
+            <div class="stage-6-weight-bar-bg">
+              <div class="stage-6-weight-bar-fill" style="width: ${barWidth}%;"></div>
+            </div>
+          </div>
+        </td>
+        <td style="font-weight: 600; color: #0f172a;">
+          ${formatWholeDollars(dMV)}
+        </td>
+        <td style="color: #475569;">
+          <span>${(wEW * 100).toFixed(2)}%</span>
+          <span style="font-size: 11.5px; color: #64748b; margin-left: 4px;">(${formatWholeDollars(dEW)})</span>
+        </td>
+        <td style="color: #475569;">
+          <span>${(wIV * 100).toFixed(2)}%</span>
+          <span style="font-size: 11.5px; color: #64748b; margin-left: 4px;">(${formatWholeDollars(dIV)})</span>
+        </td>
+      </tr>
+    `;
+  }
+
+  // Sector breakdown cards
+  let sectorCardsHtml = "";
+  const sectorKeys = Object.keys(sectorTotals);
+  for (let s = 0; s < sectorKeys.length; s += 1) {
+    const sName = sectorKeys[s];
+    const sData = sectorTotals[sName];
+    const sWeightPct = (sData.weight * 100).toFixed(1);
+    const sPass = sData.weight <= 0.500001;
+    sectorCardsHtml += `
+      <div class="stage-6-sector-card">
+        <div class="stage-6-sector-header">
+          <span class="stage-6-sector-name">${escapeHtml(sName)}</span>
+          <span class="${sPass ? "stage-6-badge-feasible" : "stage-6-badge-infeasible"}">
+            ${sPass ? "Limit Met" : "Exceeded"}
+          </span>
+        </div>
+        <div style="display: flex; align-items: baseline; justify-content: space-between; margin-top: 4px;">
+          <span class="stage-6-sector-stat">${sWeightPct}%</span>
+          <span style="font-size: 12px; color: #64748b;">${formatWholeDollars(sData.dollars)}</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">
+          ${sData.count} constituent${sData.count === 1 ? "" : "s"} &bull; max 50%
+        </div>
+      </div>
+    `;
+  }
+
+  container.innerHTML = `
+    <div class="stage-6-container">
+      ${consistencyHtml}
+
+      <div class="stage-6-header-actions">
+        <div class="stage-6-header-info">
+          <h3 class="stage-6-title">Minimum Variance Portfolio & Reference Benchmarks</h3>
+          <p class="stage-6-subtitle">
+            Optimized across ${n} gated survivors with ${(effectiveCap * 100).toFixed(0)}% position cap and 50% GICS sector ceiling.
+          </p>
+        </div>
+        <button type="button" class="btn-secondary" id="btn-reoptimize-stage6" style="font-size: 12px; padding: 6px 14px;">
+          Re-optimize
+        </button>
+      </div>
+
+      <!-- KPI Summary Cards -->
+      <div class="stage-6-metrics-grid">
+        <div class="stage-6-metric-card">
+          <div class="stage-6-metric-header">
+            <span class="stage-6-metric-label">Annualized Volatility</span>
+            <span class="stage-6-metric-badge">Min Variance</span>
+          </div>
+          <div class="stage-6-metric-value">${volMV}</div>
+          <div class="stage-6-metric-subtext">Minimized target objective</div>
+        </div>
+
+        <div class="stage-6-metric-card">
+          <div class="stage-6-metric-header">
+            <span class="stage-6-metric-label">Annualized Return</span>
+            <span class="stage-6-metric-badge">In-sample</span>
+          </div>
+          <div class="stage-6-metric-value">${retMV}</div>
+          <div class="stage-6-metric-subtext">Trailing 1-year arithmetic mean</div>
+        </div>
+
+        <div class="stage-6-metric-card">
+          <div class="stage-6-metric-header">
+            <span class="stage-6-metric-label">Sharpe Ratio</span>
+            <span class="stage-6-metric-badge">Rf = ${(effectiveRf * 100).toFixed(2)}%</span>
+          </div>
+          <div class="stage-6-metric-value">${sharpeMV}</div>
+          <div class="stage-6-metric-subtext">Excess return / Volatility</div>
+        </div>
+
+        <div class="stage-6-metric-card">
+          <div class="stage-6-metric-header">
+            <span class="stage-6-metric-label">Capital Allocated</span>
+            <span class="stage-6-metric-badge">${n} positions</span>
+          </div>
+          <div class="stage-6-metric-value">${formatWholeDollars(effectiveAmt)}</div>
+          <div class="stage-6-metric-subtext">Rounding residual assigned to top name</div>
+        </div>
+
+        <div class="stage-6-metric-card">
+          <div class="stage-6-metric-header">
+            <span class="stage-6-metric-label">Optimizer Status</span>
+            <span class="stage-6-metric-badge">${mv.converged ? "Converged" : "Completed"}</span>
+          </div>
+          <div class="stage-6-metric-value" style="font-size: 19px; padding-top: 4px;">
+            ${mv.iterations || 0} iterations
+          </div>
+          <div class="stage-6-metric-subtext">Obj: ${(mv.objective || 0).toExponential(3)}</div>
+        </div>
+      </div>
+
+      <!-- Portfolio Comparison Table -->
+      <div class="stage-6-card">
+        <div class="stage-6-card-header">
+          <div>
+            <h4 class="stage-6-card-title">Portfolio Comparison (Candidate vs References)</h4>
+            <p class="stage-6-card-desc">
+              Equal Weight and Inverse Volatility serve as reference benchmarks evaluated on the identical survivor universe.
+            </p>
+          </div>
+        </div>
+
+        <div class="stage-6-table-wrapper">
+          <table class="stage-6-table">
+            <thead>
+              <tr>
+                <th>Portfolio Method</th>
+                <th>Role</th>
+                <th>Constraint Feasibility</th>
+                <th>Ann. Volatility</th>
+                <th>Ann. Return</th>
+                <th>Sharpe Ratio</th>
+                <th>Total Allocated</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="stage-6-row-candidate">
+                <td>
+                  <span style="font-weight: 700; color: #0f172a;">Minimum Variance</span>
+                </td>
+                <td>
+                  <span class="stage-6-badge-candidate">Candidate Portfolio</span>
+                </td>
+                <td>
+                  <span class="stage-6-badge-feasible">Feasible</span>
+                </td>
+                <td style="font-weight: 700; color: #0f172a;">${volMV}</td>
+                <td>${retMV}</td>
+                <td style="font-weight: 600;">${sharpeMV}</td>
+                <td style="font-weight: 600;">${formatWholeDollars(totalMVDollars)}</td>
+              </tr>
+              <tr>
+                <td>
+                  <span style="font-weight: 600; color: #1e293b;">Equal Weight (1/n)</span>
+                </td>
+                <td>
+                  <span class="stage-6-badge-reference">Reference</span>
+                </td>
+                <td>
+                  <span class="${ew.feasible ? "stage-6-badge-feasible" : "stage-6-badge-infeasible"}">
+                    ${ew.feasible ? "Feasible" : "Infeasible"}
+                  </span>
+                </td>
+                <td>${volEW}</td>
+                <td>${retEW}</td>
+                <td>${sharpeEW}</td>
+                <td>${formatWholeDollars(totalEWDollars)}</td>
+              </tr>
+              <tr>
+                <td>
+                  <span style="font-weight: 600; color: #1e293b;">Inverse Volatility (1/vol)</span>
+                </td>
+                <td>
+                  <span class="stage-6-badge-reference">Reference</span>
+                </td>
+                <td>
+                  <span class="${iv.feasible ? "stage-6-badge-feasible" : "stage-6-badge-infeasible"}">
+                    ${iv.feasible ? "Feasible" : "Infeasible (Breaches Cap/Sector)"}
+                  </span>
+                </td>
+                <td>${volIV}</td>
+                <td>${retIV}</td>
+                <td>${sharpeIV}</td>
+                <td>${formatWholeDollars(totalIVDollars)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Constituent Weights and Dollar Allocations Table -->
+      <div class="stage-6-card">
+        <div class="stage-6-card-header">
+          <div>
+            <h4 class="stage-6-card-title">Constituent Weights & Capital Allocations</h4>
+            <p class="stage-6-card-desc">
+              All weights sum to 100.0%. Dollar allocations sum to exactly ${formatWholeDollars(effectiveAmt)} with no fractional residual.
+            </p>
+          </div>
+        </div>
+
+        <div class="stage-6-table-wrapper">
+          <table class="stage-6-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Ticker</th>
+                <th>Company & Sector</th>
+                <th>Text Gate</th>
+                <th>Min Variance Weight</th>
+                <th>Min Variance Dollar</th>
+                <th>Equal Weight</th>
+                <th>Inverse Volatility</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${constituentRowsHtml}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="4" style="text-align: right; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; color: #64748b;">
+                  Portfolio Total:
+                </td>
+                <td style="font-weight: 700; color: #0f172a;">
+                  ${(totalMVWeight * 100).toFixed(2)}%
+                </td>
+                <td style="font-weight: 700; color: #0f172a;">
+                  ${formatWholeDollars(totalMVDollars)}
+                </td>
+                <td style="color: #475569; font-weight: 600;">
+                  100.00% (${formatWholeDollars(totalEWDollars)})
+                </td>
+                <td style="color: #475569; font-weight: 600;">
+                  100.00% (${formatWholeDollars(totalIVDollars)})
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <!-- Sector Breakdown Card -->
+      <div class="stage-6-card">
+        <div class="stage-6-card-header">
+          <div>
+            <h4 class="stage-6-card-title">GICS Sector Allocation & 50% Limit Check</h4>
+            <p class="stage-6-card-desc">
+              Verifies that no single GICS sector exceeds the 50.0% half-space constraint.
+            </p>
+          </div>
+        </div>
+
+        <div class="stage-6-sector-grid">
+          ${sectorCardsHtml}
+        </div>
+      </div>
+    </div>
+  `;
+
+  setupStage6Events();
+}
+
+/**
+ * Binds event listeners for Stage 6 interactive elements.
+ */
+function setupStage6Events() {
+  const btnReoptimize = document.getElementById("btn-reoptimize-stage6");
+  if (btnReoptimize !== null) {
+    btnReoptimize.onclick = () => {
+      runStage6Optimization();
+    };
+  }
+
+  const btnOpenSettings = document.getElementById("btn-stage6-open-settings");
+  if (btnOpenSettings !== null) {
+    btnOpenSettings.onclick = () => {
+      const settingsToggle = document.getElementById("btn-toggle-settings");
+      if (settingsToggle !== null) {
+        settingsToggle.click();
+      }
+    };
+  }
+}
+
+/**
+ * Initializes Stage 6.
+ */
+export function setupStage6() {
+  renderStage6UI();
+}
+
+
 // Attach helpers and state to window for testing and subsequent prompts
 const hasWindow = typeof window !== "undefined";
 if (hasWindow === true) {
@@ -8229,6 +9292,18 @@ if (hasWindow === true) {
   window.validateWeights = validateWeights;
   window.projectFeasible = projectFeasible;
   window.solveMinimumVariance = solveMinimumVariance;
+  window.formatWholeDollars = formatWholeDollars;
+  window.computePortfolioSeries = computePortfolioSeries;
+  window.computeDollarAllocations = computeDollarAllocations;
+  window.computeInverseVolWeights = computeInverseVolWeights;
+  window.computeBenchmarks = computeBenchmarks;
+  window.checkConsistency = checkConsistency;
+  window.updateStage6InvestmentAmount = updateStage6InvestmentAmount;
+  window.updateStage6RiskFreeRate = updateStage6RiskFreeRate;
+  window.runStage6Optimization = runStage6Optimization;
+  window.renderStage6UI = renderStage6UI;
+  window.setupStage6 = setupStage6;
+  window.state = appState;
 }
 
 function initializeApp() {
@@ -8241,6 +9316,7 @@ function initializeApp() {
   setupStage3();
   setupStage4();
   setupStage5();
+  setupStage6();
 }
 
 const hasDocument = typeof document !== "undefined";
