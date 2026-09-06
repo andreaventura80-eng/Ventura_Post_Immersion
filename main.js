@@ -64,11 +64,35 @@ export const STAGES = [
   { id: 8, name: "Portfolio and note", shortName: "Portfolio & note" }
 ];
 
+export const INDICATOR_CONSTANTS = Object.freeze({
+  rsiPeriod: 14,
+  macdFast: 12,
+  macdSlow: 26,
+  macdSignal: 9
+});
+
+export const DEFAULT_OPENROUTER_MODEL = "anthropic/claude-3.5-sonnet";
+
+export const DEFAULT_SETTINGS = Object.freeze({
+  rsiThreshold: 40,
+  rsiRelaxCount: 0,
+  histogramLookback: 3,
+  weightCap: 0.25,
+  minimumBreadth: 5,
+  gateMode: "exclude",
+  investmentAmount: 1000000,
+  riskFreeRate: 0.0391,
+  creditsPerMinute: 144,
+  openRouterModel: DEFAULT_OPENROUTER_MODEL
+});
+
 // Central application state with named slots for all pipeline stages
 export const appState = {
   universe: null,
   selectedTickers: [],
-  settings: {},
+  settings: {
+    ...DEFAULT_SETTINGS
+  },
   keys: {
     twelveData: "",
     openRouter: ""
@@ -683,6 +707,7 @@ export function applyUniverseCSV(csvText) {
     }
 
     renderUniverseUI();
+    updatePreflightCard();
     showUniverseMessage("Universe updated successfully. 33 constituents and SPY benchmark loaded.", "success");
     return { success: true };
   } else {
@@ -770,7 +795,31 @@ export function resetToDefaultUniverse() {
   }
 
   renderUniverseUI();
+  updatePreflightCard();
   showUniverseMessage("Reset to default 33-constituent universe and SPY benchmark.", "info");
+}
+
+/**
+ * Toggles a constituent ticker in appState.selectedTickers.
+ * SPY is never toggled.
+ *
+ * @param {string} ticker
+ */
+export function toggleConstituentTicker(ticker) {
+  const isSpy = ticker === "SPY";
+  if (isSpy === true) {
+    return;
+  }
+
+  const isSelected = appState.selectedTickers.includes(ticker);
+  if (isSelected === true) {
+    appState.selectedTickers = appState.selectedTickers.filter((t) => t !== ticker);
+  } else {
+    appState.selectedTickers = [...appState.selectedTickers, ticker];
+  }
+
+  renderUniverseUI();
+  updatePreflightCard();
 }
 
 /**
@@ -792,8 +841,9 @@ export function renderUniverseUI() {
   const constituentsVal = document.getElementById("stat-constituents-count");
   const hasConstituentsVal = constituentsVal !== null;
   if (hasConstituentsVal === true) {
-    const count = appState.selectedTickers ? appState.selectedTickers.length : 0;
-    constituentsVal.textContent = `${count} / 33 selected`;
+    const selectedCount = appState.selectedTickers ? appState.selectedTickers.length : 0;
+    const totalConstituents = (appState.universe || []).filter((r) => r.sector !== "Benchmark" && r.ticker !== "SPY").length;
+    constituentsVal.textContent = `${selectedCount} / ${totalConstituents} selected`;
   }
 
   gridContainer.innerHTML = "";
@@ -802,6 +852,7 @@ export function renderUniverseUI() {
 
   GICS_SECTORS.forEach((sectorName) => {
     const sectorRows = universe.filter((row) => row.sector === sectorName);
+    const activeInSector = sectorRows.filter((row) => appState.selectedTickers.includes(row.ticker)).length;
 
     const card = document.createElement("div");
     card.className = "sector-card";
@@ -809,13 +860,18 @@ export function renderUniverseUI() {
     card.id = `sector-card-${slug}`;
 
     const tickersHtml = sectorRows
-      .map((row) => `<span class="ticker-chip" id="chip-${row.ticker.toLowerCase()}">${row.ticker}</span>`)
+      .map((row) => {
+        const isSelected = appState.selectedTickers.includes(row.ticker);
+        const chipClass = isSelected === true ? "ticker-chip selected" : "ticker-chip deselected";
+        const ariaPressed = isSelected === true ? "true" : "false";
+        return `<button type="button" class="${chipClass}" id="chip-${row.ticker.toLowerCase()}" data-ticker="${row.ticker}" aria-pressed="${ariaPressed}">${row.ticker}</button>`;
+      })
       .join("");
 
     card.innerHTML = `
       <div class="sector-card-header">
         <span class="sector-name">${sectorName}</span>
-        <span class="sector-badge-count">${sectorRows.length} tickers</span>
+        <span class="sector-badge-count">${activeInSector} / ${sectorRows.length} active</span>
       </div>
       <div class="sector-tickers-list">
         ${tickersHtml}
@@ -824,6 +880,690 @@ export function renderUniverseUI() {
 
     gridContainer.appendChild(card);
   });
+}
+
+/**
+ * Displays a validation error message in the settings panel.
+ *
+ * @param {string} message
+ */
+export function showSettingsError(message) {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const msgEl = document.getElementById("settings-validation-message");
+  if (msgEl !== null) {
+    msgEl.textContent = message;
+    msgEl.classList.remove("hidden");
+  }
+}
+
+/**
+ * Clears the validation error message in the settings panel.
+ */
+export function clearSettingsError() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const msgEl = document.getElementById("settings-validation-message");
+  if (msgEl !== null) {
+    msgEl.textContent = "";
+    msgEl.classList.add("hidden");
+  }
+}
+
+/**
+ * Validates and updates the weight cap setting.
+ * Range: 15% to 50% in steps of 1% (stored as fraction 0.15 to 0.50).
+ * Enforces coupled constraint: minimumBreadth * weightCap >= 1.0.
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetWeightCap(rawInput) {
+  const str = String(rawInput).trim().replace(/%/g, "");
+  const num = parseFloat(str);
+  const isNum = isNaN(num) === false;
+  if (isNum === false) {
+    showSettingsError(`Weight cap must be an integer percentage between 15% and 50% in steps of 1% (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  let percentVal = num;
+  const isFractionForm = num > 0 && num <= 1;
+  if (isFractionForm === true) {
+    percentVal = Math.round(num * 100);
+  }
+
+  const isInteger = Number.isInteger(percentVal) === true;
+  const inRange = isInteger === true && percentVal >= 15 && percentVal <= 50;
+  if (inRange === false) {
+    showSettingsError(`Weight cap must be an integer percentage between 15% and 50% in steps of 1% (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  const candidateFraction = percentVal / 100;
+  const currentBreadth = appState.settings.minimumBreadth;
+  const product = currentBreadth * candidateFraction;
+  const breadthTimesCapIsFeasible = product >= 1.0 - 1e-9;
+  if (breadthTimesCapIsFeasible === false) {
+    const currentProductPercent = Math.round(product * 100);
+    showSettingsError(
+      `Coupled constraint rule broken: minimum breadth (${currentBreadth}) multiplied by weight cap (${percentVal}%) equals ${currentProductPercent}%, which is below 100%. Please raise the breadth before lowering the cap.`
+    );
+    renderSettingsUI();
+    return false;
+  }
+
+  appState.settings.weightCap = candidateFraction;
+  clearSettingsError();
+  renderSettingsUI();
+  updatePreflightCard();
+  return true;
+}
+
+/**
+ * Validates and updates the minimum breadth setting.
+ * Range: integer >= 2.
+ * Enforces coupled constraint: minimumBreadth * weightCap >= 1.0.
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetMinimumBreadth(rawInput) {
+  const clean = String(rawInput).trim();
+  const isInt = /^-?\d+$/.test(clean) === true;
+  const num = parseInt(clean, 10);
+  const isAtLeastTwo = isInt === true && num >= 2;
+  if (isAtLeastTwo === false) {
+    showSettingsError(`Minimum breadth must be an integer of at least 2 (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  const currentCapFraction = appState.settings.weightCap;
+  const product = num * currentCapFraction;
+  const breadthTimesCapIsFeasible = product >= 1.0 - 1e-9;
+  if (breadthTimesCapIsFeasible === false) {
+    const capPercent = Math.round(currentCapFraction * 100);
+    const currentProductPercent = Math.round(product * 100);
+    showSettingsError(
+      `Coupled constraint rule broken: minimum breadth (${num}) multiplied by weight cap (${capPercent}%) equals ${currentProductPercent}%, which is below 100%. Please raise the cap before lowering the breadth.`
+    );
+    renderSettingsUI();
+    return false;
+  }
+
+  appState.settings.minimumBreadth = num;
+  clearSettingsError();
+  renderSettingsUI();
+  updatePreflightCard();
+  return true;
+}
+
+/**
+ * Validates and updates the investment capital setting.
+ * Range: whole dollars, at least 1,000 USD.
+ * Accepts input with or without thousands commas.
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetInvestmentAmount(rawInput) {
+  const clean = String(rawInput).trim().replace(/,/g, "").replace(/\$/g, "");
+  const isWholeNumber = /^-?\d+$/.test(clean) === true;
+  if (isWholeNumber === false) {
+    showSettingsError(`Investment amount must be a whole dollar integer without decimals (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  const num = parseInt(clean, 10);
+  const isAtLeast1000 = num >= 1000;
+  if (isAtLeast1000 === false) {
+    showSettingsError(`Investment amount must be at least 1,000 USD (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  appState.settings.investmentAmount = num;
+  clearSettingsError();
+  renderSettingsUI();
+  updatePreflightCard();
+  return true;
+}
+
+/**
+ * Validates and updates the RSI threshold setting.
+ * Range: integer 30 to 50.
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetRsiThreshold(rawInput) {
+  const clean = String(rawInput).trim();
+  const isInt = /^-?\d+$/.test(clean) === true;
+  const num = parseInt(clean, 10);
+  const inRange = isInt === true && num >= 30 && num <= 50;
+  if (inRange === false) {
+    showSettingsError(`RSI threshold must be an integer between 30 and 50 (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  appState.settings.rsiThreshold = num;
+  clearSettingsError();
+  renderSettingsUI();
+  updatePreflightCard();
+  return true;
+}
+
+/**
+ * Validates and updates the MACD histogram lookback (N) setting.
+ * Range: integer 2 to 10.
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetHistogramLookback(rawInput) {
+  const clean = String(rawInput).trim();
+  const isInt = /^-?\d+$/.test(clean) === true;
+  const num = parseInt(clean, 10);
+  const inRange = isInt === true && num >= 2 && num <= 10;
+  if (inRange === false) {
+    showSettingsError(`MACD histogram lookback (N) must be an integer between 2 and 10 (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  appState.settings.histogramLookback = num;
+  clearSettingsError();
+  renderSettingsUI();
+  updatePreflightCard();
+  return true;
+}
+
+/**
+ * Validates and updates the risk-free rate setting.
+ * Range: 0% to 10% in steps of 0.01% (stored as fraction 0.0 to 0.10).
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetRiskFreeRate(rawInput) {
+  const clean = String(rawInput).trim().replace(/%/g, "");
+  const num = parseFloat(clean);
+  const isValid = isNaN(num) === false && num >= 0 && num <= 10;
+  if (isValid === false) {
+    showSettingsError(`Risk-free rate must be between 0% and 10% in steps of 0.01% (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  const roundedPercent = Math.round(num * 100) / 100;
+  appState.settings.riskFreeRate = roundedPercent / 100;
+  clearSettingsError();
+  renderSettingsUI();
+  updatePreflightCard();
+  return true;
+}
+
+/**
+ * Validates and updates the credits per minute quota setting.
+ * Range: integer >= 34.
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetCreditsPerMinute(rawInput) {
+  const clean = String(rawInput).trim();
+  const isInt = /^-?\d+$/.test(clean) === true;
+  const num = parseInt(clean, 10);
+  const isAtLeast34 = isInt === true && num >= 34;
+  if (isAtLeast34 === false) {
+    showSettingsError(`Credits per minute must be an integer of at least 34 credits/minute (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  appState.settings.creditsPerMinute = num;
+  clearSettingsError();
+  renderSettingsUI();
+  updatePreflightCard();
+  return true;
+}
+
+/**
+ * Validates and updates the qualitative text gate mode setting.
+ * Values: "exclude" or "warn".
+ *
+ * @param {string} val
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetGateMode(val) {
+  const isAllowed = val === "exclude" || val === "warn";
+  if (isAllowed === true) {
+    appState.settings.gateMode = val;
+    clearSettingsError();
+  } else {
+    showSettingsError(`Gate mode must be "exclude" or "warn" (entered "${val}").`);
+    renderSettingsUI();
+    return false;
+  }
+  updatePreflightCard();
+  return true;
+}
+
+/**
+ * Validates and updates the OpenRouter model identifier setting.
+ * Must not be empty.
+ *
+ * @param {string} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetOpenRouterModel(rawInput) {
+  const clean = String(rawInput).trim();
+  const isEmpty = clean.length === 0;
+  if (isEmpty === true) {
+    showSettingsError("OpenRouter model identifier cannot be empty.");
+    renderSettingsUI();
+    updatePreflightCard();
+    return false;
+  }
+
+  appState.settings.openRouterModel = clean;
+  clearSettingsError();
+  renderSettingsUI();
+  updatePreflightCard();
+  return true;
+}
+
+/**
+ * Stores the Twelve Data API key in memory only.
+ *
+ * @param {string} key
+ */
+export function setTwelveDataKey(key) {
+  appState.keys.twelveData = String(key || "");
+  updatePreflightCard();
+}
+
+/**
+ * Stores the OpenRouter API key in memory only.
+ *
+ * @param {string} key
+ */
+export function setOpenRouterKey(key) {
+  appState.keys.openRouter = String(key || "");
+  updatePreflightCard();
+}
+
+/**
+ * Computes all setting-level reasons why a pipeline run cannot succeed.
+ *
+ * @returns {string[]} List of blocking reason messages
+ */
+export function computePreflightChecks() {
+  const reasons = [];
+
+  // 1. Fewer selected constituents than minimumBreadth
+  const selectedConstituents = (appState.selectedTickers || []).filter((t) => t !== "SPY");
+  const constituentCount = selectedConstituents.length;
+  const minBreadth = appState.settings.minimumBreadth || 5;
+  const hasEnoughConstituents = constituentCount >= minBreadth;
+  if (hasEnoughConstituents === false) {
+    reasons.push(
+      `Fewer selected constituents (${constituentCount}) than minimum breadth (${minBreadth}).`
+    );
+  }
+
+  // 2. Selected constituents in fewer than two sectors
+  const universe = appState.universe || [];
+  const tickerToSector = new Map();
+  for (let i = 0; i < universe.length; i += 1) {
+    const row = universe[i];
+    const isConstituent = row.sector !== "Benchmark" && row.ticker !== "SPY";
+    if (isConstituent === true) {
+      tickerToSector.set(row.ticker, row.sector);
+    }
+  }
+
+  const activeSectors = new Set();
+  for (let j = 0; j < selectedConstituents.length; j += 1) {
+    const t = selectedConstituents[j];
+    const sec = tickerToSector.get(t);
+    if (sec !== undefined) {
+      activeSectors.add(sec);
+    }
+  }
+
+  const hasAtLeastTwoSectors = activeSectors.size >= 2;
+  if (hasAtLeastTwoSectors === false) {
+    const sectorCount = activeSectors.size;
+    reasons.push(
+      `Selected constituents represent ${sectorCount} sector(s). At least 2 sectors are required.`
+    );
+  }
+
+  // 3. investmentAmount not a whole number of at least 1,000
+  const inv = appState.settings.investmentAmount;
+  const isInvInteger = Number.isInteger(inv) === true;
+  const isInvAtLeast1000 = typeof inv === "number" && inv >= 1000;
+  const isInvValid = isInvInteger === true && isInvAtLeast1000 === true;
+  if (isInvValid === false) {
+    reasons.push("Investment amount must be a whole number of at least 1,000 USD.");
+  }
+
+  // 4. empty openRouterModel
+  const model = (appState.settings.openRouterModel || "").trim();
+  const isModelEmpty = model.length === 0;
+  if (isModelEmpty === true) {
+    reasons.push("OpenRouter model identifier is empty.");
+  }
+
+  // 5. empty twelveDataKey
+  const tdKey = (appState.keys.twelveData || "").trim();
+  const isTdKeyEmpty = tdKey.length === 0;
+  if (isTdKeyEmpty === true) {
+    reasons.push("Twelve Data API key is required.");
+  }
+
+  // 6. empty openRouterKey
+  const orKey = (appState.keys.openRouter || "").trim();
+  const isOrKeyEmpty = orKey.length === 0;
+  if (isOrKeyEmpty === true) {
+    reasons.push("OpenRouter API key is required.");
+  }
+
+  return reasons;
+}
+
+/**
+ * Recomputes the pre-flight card display and updates the Run button state.
+ */
+export function updatePreflightCard() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const reasonsListEl = document.getElementById("preflight-reasons-list");
+  const statusBadgeEl = document.getElementById("preflight-status-badge");
+  const runBtnEl = document.getElementById("btn-run-pipeline");
+  const runHintEl = document.getElementById("run-pipeline-hint");
+
+  const reasons = computePreflightChecks();
+  const isReady = reasons.length === 0;
+
+  if (reasonsListEl !== null) {
+    if (isReady === true) {
+      reasonsListEl.innerHTML = `
+        <li class="preflight-success-item">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+          <span>All pre-flight checks passed. Universe, settings, and credentials are ready.</span>
+        </li>
+      `;
+    } else {
+      reasonsListEl.innerHTML = reasons
+        .map((reason) => `<li>${reason}</li>`)
+        .join("");
+    }
+  }
+
+  if (statusBadgeEl !== null) {
+    if (isReady === true) {
+      statusBadgeEl.textContent = "Ready";
+      statusBadgeEl.className = "preflight-badge status-ready";
+    } else {
+      statusBadgeEl.textContent = `Blocked (${reasons.length})`;
+      statusBadgeEl.className = "preflight-badge status-blocked";
+    }
+  }
+
+  if (runBtnEl !== null) {
+    runBtnEl.disabled = isReady === false;
+  }
+
+  if (runHintEl !== null) {
+    if (isReady === true) {
+      runHintEl.textContent = "All pre-flight checks satisfied. Press Run Pipeline to begin.";
+    } else {
+      runHintEl.textContent = `Resolve the ${reasons.length} pre-flight item(s) above to enable Run.`;
+    }
+  }
+}
+
+/**
+ * Handles clicking the Run Pipeline button.
+ * Sets Stage 1 to "done" and Stage 2 to "running".
+ */
+export function handleRunPipeline() {
+  const reasons = computePreflightChecks();
+  const canRun = reasons.length === 0;
+  if (canRun === true) {
+    setStageStatus(1, "done");
+    setStageStatus(2, "running");
+
+    const hasDocument = typeof document !== "undefined";
+    if (hasDocument === true) {
+      const stageBody2 = document.getElementById("stage-body-2");
+      const stageHeader2 = document.getElementById("stage-header-2");
+      if (stageBody2 !== null && stageHeader2 !== null) {
+        stageBody2.classList.remove("collapsed");
+        stageHeader2.setAttribute("aria-expanded", "true");
+      }
+
+      const stageSection2 = document.getElementById("stage-section-2");
+      if (stageSection2 !== null) {
+        stageSection2.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+  } else {
+    updatePreflightCard();
+  }
+}
+
+/**
+ * Updates all settings input fields in the DOM from appState.settings.
+ */
+export function renderSettingsUI() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const rsiInput = document.getElementById("setting-rsi-threshold");
+  if (rsiInput !== null && document.activeElement !== rsiInput) {
+    rsiInput.value = String(appState.settings.rsiThreshold);
+  }
+
+  const rsiRelaxSpan = document.getElementById("rsi-relax-count-val");
+  if (rsiRelaxSpan !== null) {
+    rsiRelaxSpan.textContent = String(appState.settings.rsiRelaxCount || 0);
+  }
+
+  const histInput = document.getElementById("setting-histogram-lookback");
+  if (histInput !== null && document.activeElement !== histInput) {
+    histInput.value = String(appState.settings.histogramLookback);
+  }
+
+  const capInput = document.getElementById("setting-weight-cap");
+  if (capInput !== null && document.activeElement !== capInput) {
+    const percent = Math.round((appState.settings.weightCap || 0.25) * 100);
+    capInput.value = `${percent}%`;
+  }
+
+  const breadthInput = document.getElementById("setting-minimum-breadth");
+  if (breadthInput !== null && document.activeElement !== breadthInput) {
+    breadthInput.value = String(appState.settings.minimumBreadth);
+  }
+
+  const gateSelect = document.getElementById("setting-gate-mode");
+  if (gateSelect !== null && document.activeElement !== gateSelect) {
+    gateSelect.value = appState.settings.gateMode || "exclude";
+  }
+
+  const invInput = document.getElementById("setting-investment-amount");
+  if (invInput !== null && document.activeElement !== invInput) {
+    const inv = appState.settings.investmentAmount || 1000000;
+    invInput.value = inv.toLocaleString("en-US");
+  }
+
+  const rfInput = document.getElementById("setting-risk-free-rate");
+  if (rfInput !== null && document.activeElement !== rfInput) {
+    const rf = (appState.settings.riskFreeRate || 0.0391) * 100;
+    rfInput.value = `${rf.toFixed(2)}%`;
+  }
+
+  const credInput = document.getElementById("setting-credits-per-minute");
+  if (credInput !== null && document.activeElement !== credInput) {
+    credInput.value = String(appState.settings.creditsPerMinute || 144);
+  }
+
+  const modelInput = document.getElementById("setting-open-router-model");
+  if (modelInput !== null && document.activeElement !== modelInput) {
+    modelInput.value = appState.settings.openRouterModel || DEFAULT_OPENROUTER_MODEL;
+  }
+}
+
+/**
+ * Wires up all event listeners for the settings panel, constituent chips, and pre-flight card.
+ */
+export function setupSettingsPanel() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  // Delegated click listener for sector chips grid
+  const sectorsGrid = document.getElementById("universe-sectors-grid");
+  if (sectorsGrid !== null) {
+    sectorsGrid.addEventListener("click", (event) => {
+      const chipBtn = event.target.closest(".ticker-chip");
+      if (chipBtn !== null) {
+        const ticker = chipBtn.getAttribute("data-ticker");
+        const isValidTicker = typeof ticker === "string" && ticker.length > 0 && ticker !== "SPY";
+        if (isValidTicker === true) {
+          toggleConstituentTicker(ticker);
+        }
+      }
+    });
+  }
+
+  // Weight Cap
+  const capInput = document.getElementById("setting-weight-cap");
+  if (capInput !== null) {
+    capInput.addEventListener("change", (e) => {
+      validateAndSetWeightCap(e.target.value);
+    });
+  }
+
+  // Minimum Breadth
+  const breadthInput = document.getElementById("setting-minimum-breadth");
+  if (breadthInput !== null) {
+    breadthInput.addEventListener("change", (e) => {
+      validateAndSetMinimumBreadth(e.target.value);
+    });
+  }
+
+  // Investment Amount
+  const invInput = document.getElementById("setting-investment-amount");
+  if (invInput !== null) {
+    invInput.addEventListener("change", (e) => {
+      validateAndSetInvestmentAmount(e.target.value);
+    });
+  }
+
+  // RSI Threshold
+  const rsiInput = document.getElementById("setting-rsi-threshold");
+  if (rsiInput !== null) {
+    rsiInput.addEventListener("change", (e) => {
+      validateAndSetRsiThreshold(e.target.value);
+    });
+  }
+
+  // Histogram Lookback
+  const histInput = document.getElementById("setting-histogram-lookback");
+  if (histInput !== null) {
+    histInput.addEventListener("change", (e) => {
+      validateAndSetHistogramLookback(e.target.value);
+    });
+  }
+
+  // Risk Free Rate
+  const rfInput = document.getElementById("setting-risk-free-rate");
+  if (rfInput !== null) {
+    rfInput.addEventListener("change", (e) => {
+      validateAndSetRiskFreeRate(e.target.value);
+    });
+  }
+
+  // Credits Per Minute
+  const credInput = document.getElementById("setting-credits-per-minute");
+  if (credInput !== null) {
+    credInput.addEventListener("change", (e) => {
+      validateAndSetCreditsPerMinute(e.target.value);
+    });
+  }
+
+  // Gate Mode
+  const gateSelect = document.getElementById("setting-gate-mode");
+  if (gateSelect !== null) {
+    gateSelect.addEventListener("change", (e) => {
+      validateAndSetGateMode(e.target.value);
+    });
+  }
+
+  // OpenRouter Model
+  const modelInput = document.getElementById("setting-open-router-model");
+  if (modelInput !== null) {
+    modelInput.addEventListener("input", (e) => {
+      appState.settings.openRouterModel = e.target.value;
+      updatePreflightCard();
+    });
+    modelInput.addEventListener("change", (e) => {
+      validateAndSetOpenRouterModel(e.target.value);
+    });
+  }
+
+  // Twelve Data Key
+  const tdInput = document.getElementById("input-twelve-data-key");
+  if (tdInput !== null) {
+    tdInput.addEventListener("input", (e) => {
+      setTwelveDataKey(e.target.value);
+    });
+    tdInput.addEventListener("change", (e) => {
+      setTwelveDataKey(e.target.value);
+    });
+  }
+
+  // OpenRouter Key
+  const orInput = document.getElementById("input-open-router-key");
+  if (orInput !== null) {
+    orInput.addEventListener("input", (e) => {
+      setOpenRouterKey(e.target.value);
+    });
+    orInput.addEventListener("change", (e) => {
+      setOpenRouterKey(e.target.value);
+    });
+  }
+
+  // Run Pipeline Button
+  const runBtn = document.getElementById("btn-run-pipeline");
+  if (runBtn !== null) {
+    runBtn.addEventListener("click", () => {
+      handleRunPipeline();
+    });
+  }
+
+  renderSettingsUI();
+  updatePreflightCard();
 }
 
 /**
@@ -940,6 +1680,26 @@ if (hasWindow === true) {
   window.resetToDefaultUniverse = resetToDefaultUniverse;
   window.renderUniverseUI = renderUniverseUI;
   window.setupUniverseUpload = setupUniverseUpload;
+  window.INDICATOR_CONSTANTS = INDICATOR_CONSTANTS;
+  window.DEFAULT_SETTINGS = DEFAULT_SETTINGS;
+  window.DEFAULT_OPENROUTER_MODEL = DEFAULT_OPENROUTER_MODEL;
+  window.toggleConstituentTicker = toggleConstituentTicker;
+  window.validateAndSetWeightCap = validateAndSetWeightCap;
+  window.validateAndSetMinimumBreadth = validateAndSetMinimumBreadth;
+  window.validateAndSetInvestmentAmount = validateAndSetInvestmentAmount;
+  window.validateAndSetRsiThreshold = validateAndSetRsiThreshold;
+  window.validateAndSetHistogramLookback = validateAndSetHistogramLookback;
+  window.validateAndSetRiskFreeRate = validateAndSetRiskFreeRate;
+  window.validateAndSetCreditsPerMinute = validateAndSetCreditsPerMinute;
+  window.validateAndSetGateMode = validateAndSetGateMode;
+  window.validateAndSetOpenRouterModel = validateAndSetOpenRouterModel;
+  window.setTwelveDataKey = setTwelveDataKey;
+  window.setOpenRouterKey = setOpenRouterKey;
+  window.computePreflightChecks = computePreflightChecks;
+  window.updatePreflightCard = updatePreflightCard;
+  window.handleRunPipeline = handleRunPipeline;
+  window.renderSettingsUI = renderSettingsUI;
+  window.setupSettingsPanel = setupSettingsPanel;
 }
 
 function initializeApp() {
@@ -947,6 +1707,7 @@ function initializeApp() {
   setupCollapsibleSections();
   setupUniverseUpload();
   renderUniverseUI();
+  setupSettingsPanel();
 }
 
 const hasDocument = typeof document !== "undefined";
