@@ -1095,8 +1095,35 @@
       </div>
       <div class="stage-body" id="stage-body-7">
         <div class="stage-content" id="stage-content-7">
-          <div class="stage-placeholder">
-            <p class="placeholder-text">Stage 7: Guardrails and review controls will be rendered here.</p>
+          <div class="stage-placeholder" id="stage-7-placeholder">
+            <p class="placeholder-text" id="stage-7-placeholder-text">Stage 7: Guardrails and review controls will be rendered here once candidate portfolio is generated.</p>
+          </div>
+          <div class="stage-container hidden" id="stage-7-container">
+            <div id="guardrail-blocking-banner" class="alert alert-error hidden" role="alert">a survivor has no text label</div>
+            <div class="content-card" id="stage-7-guardrails-card">
+              <div class="content-card-header">
+                <div>
+                  <h3 class="card-title">Portfolio Guardrails</h3>
+                  <p class="card-subtitle">Automated compliance, breadth, and coupled risk checks evaluated purely in JavaScript.</p>
+                </div>
+                <span class="badge" id="guardrail-overall-status-badge">Pending</span>
+              </div>
+              <div class="guardrails-list" id="stage-7-checks-list">
+                <!-- Checklist items rendered dynamically -->
+              </div>
+            </div>
+
+            <!-- Review Confirmation Box -->
+            <div class="content-card" id="stage-7-review-card">
+              <div class="guardrail-review-box" id="guardrail-review-box">
+                <label class="checkbox-container" id="guardrail-reviewed-label" for="guardrail-reviewed-checkbox">
+                  <input type="checkbox" id="guardrail-reviewed-checkbox" />
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-label-text">I have reviewed the quantitative guardrails, sector allocations, and candidate portfolio.</span>
+                </label>
+                <span class="badge" id="guardrail-review-status">Unreviewed</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1118,8 +1145,58 @@
       </div>
       <div class="stage-body" id="stage-body-8">
         <div class="stage-content" id="stage-content-8">
-          <div class="stage-placeholder">
-            <p class="placeholder-text">Stage 8: Portfolio and note controls will be rendered here.</p>
+          <div class="stage-placeholder" id="stage-8-placeholder">
+            <p class="placeholder-text" id="stage-8-placeholder-text">Stage 8: Portfolio allocations and investment note will be rendered here.</p>
+          </div>
+          <div class="stage-container hidden" id="stage-8-container">
+            <!-- Amber note stale alert -->
+            <div class="alert alert-warning hidden" id="stage-8-note-stale-alert" role="alert">
+              <span class="alert-icon" aria-hidden="true">&#9888;</span>
+              <span id="stage-8-note-stale-text">The note quotes dollar figures for a different amount. Press Regenerate note.</span>
+            </div>
+
+            <!-- Control bar above the chart: Investment Amount and Capital Display -->
+            <div class="stage-8-controls-bar" id="stage-8-controls-bar">
+              <div class="stage-8-amount-control-group">
+                <label for="stage-8-investment-amount" class="setting-field-label">Investment Capital (USD):</label>
+                <div class="input-prefix-wrapper">
+                  <span class="input-prefix">$</span>
+                  <input type="text" id="stage-8-investment-amount" class="apple-input-field input-has-prefix" value="1,000,000" aria-label="Investment Capital in USD" />
+                </div>
+              </div>
+              <div class="stage-8-capital-badge" id="stage-8-capital-badge">
+                <span class="capital-badge-label">Active Capital:</span>
+                <span class="capital-badge-value" id="stage-8-capital-display">$1,000,000</span>
+              </div>
+            </div>
+
+            <!-- Stage 8 Investment Note Card -->
+            <div class="content-card" id="stage-8-note-card">
+              <div class="content-card-header">
+                <div>
+                  <h3 class="card-title">Investment Thesis &amp; Interpretation Note</h3>
+                  <p class="card-subtitle" id="stage-8-note-subtitle">Plain English qualitative interpretation generated once per run.</p>
+                </div>
+                <span class="badge badge-status-pass" id="stage-8-note-status-badge">Ready</span>
+              </div>
+              <div class="stage-8-note-body" id="stage-8-note-body">
+                <!-- Note text rendered dynamically -->
+              </div>
+            </div>
+
+            <!-- Stage 8 Actions Bar -->
+            <div class="stage-actions-bar" id="stage-8-actions-bar">
+              <div class="stage-actions-left">
+                <button type="button" class="btn btn-secondary" id="btn-regenerate-note">
+                  Regenerate note
+                </button>
+              </div>
+              <div class="stage-actions-right">
+                <button type="button" class="btn btn-primary" id="btn-export-portfolio" disabled>
+                  Export Portfolio
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

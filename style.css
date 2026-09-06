@@ -3895,6 +3895,127 @@ tr.signal-drilldown-row td {
   color: #0f172a;
 }
 
+/* Stage 7: Guardrails and Review Styles */
+.guardrails-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.guardrail-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.guardrail-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.guardrail-item-name {
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.guardrail-item-detail {
+  font-size: 12px;
+  color: #64748b;
+}
+
+#guardrail-blocking-banner {
+  background: #fdeeee;
+  border: 1px solid #f9c0c0;
+  color: #d70015;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.guardrail-review-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+}
+
+/* Stage 8: Controls, Amber Note Stale Alert, Note Card */
+#stage-8-note-stale-alert {
+  background: #fff6e8;
+  border: 1px solid #ffe0b2;
+  color: #b25e00;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stage-8-controls-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.stage-8-amount-control-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.stage-8-capital-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.capital-badge-label {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.capital-badge-value {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.stage-8-note-body {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: #334155;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  margin-top: 14px;
+}
+
+
 
 
 
