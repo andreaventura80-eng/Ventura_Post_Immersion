@@ -201,7 +201,10 @@
                 <div class="setting-field-card" id="field-rsi-threshold">
                   <div class="setting-field-header">
                     <label class="setting-field-label" for="setting-rsi-threshold">RSI Threshold</label>
-                    <span class="setting-relax-badge">Relax count: <strong id="rsi-relax-count-val">0</strong></span>
+                    <div class="setting-relax-group">
+                      <span class="setting-relax-badge">Relax count: <strong id="rsi-relax-count-val">0</strong></span>
+                      <span class="setting-relax-status hidden" id="rsi-relax-status"></span>
+                    </div>
                   </div>
                   <div class="input-with-unit">
                     <input type="text" id="setting-rsi-threshold" class="apple-input-field" value="40" aria-describedby="hint-rsi-threshold" />
@@ -822,8 +825,92 @@
       </div>
       <div class="stage-body" id="stage-body-4">
         <div class="stage-content" id="stage-content-4">
-          <div class="stage-placeholder">
-            <p class="placeholder-text">Stage 4: Technical screen controls will be rendered here.</p>
+          <div class="stage-placeholder" id="stage-4-placeholder">
+            <p class="placeholder-text">Stage 4: Technical screen controls will be rendered here once indicators are computed in Stage 3.</p>
+          </div>
+
+          <div class="stage-4-container hidden" id="stage-4-container">
+            <!-- Stage 4 Early Warning Card -->
+            <div class="stage-4-alert hidden" id="stage-4-warning-card" role="alert">
+              <div class="stage-4-alert-content">
+                <div class="stage-4-alert-header">
+                  <span class="stage-4-alert-badge">Early Warning</span>
+                  <h4 class="stage-4-alert-title" id="stage-4-warning-title">Constituent Breadth Below Minimum Threshold</h4>
+                </div>
+                <p class="stage-4-alert-text" id="stage-4-warning-text">
+                  This is an early warning: technical survivor count is below minimum breadth. The binding breadth check happens after the text gate.
+                </p>
+                <div class="stage-4-alert-actions">
+                  <button type="button" class="apple-btn-primary btn-relax-rsi" id="btn-relax-rsi">
+                    Relax RSI by +5
+                  </button>
+                  <span class="relax-status-note" id="stage-4-relax-note">Current threshold: 40</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Stage 4 Summary Bar -->
+            <div class="stage-4-summary-bar" id="stage-4-summary-bar">
+              <div class="stage-3-metric-card">
+                <span class="stage-3-metric-label">Technical Survivors</span>
+                <span class="stage-3-metric-val" id="s4-metric-survivors">--</span>
+              </div>
+              <div class="stage-3-metric-card">
+                <span class="stage-3-metric-label">Oversold Gate</span>
+                <span class="stage-3-metric-val" id="s4-metric-oversold">RSI &lt; 40</span>
+              </div>
+              <div class="stage-3-metric-card">
+                <span class="stage-3-metric-label">Turning Gate</span>
+                <span class="stage-3-metric-val" id="s4-metric-turning">H_t &gt; H_(t-3)</span>
+              </div>
+              <div class="stage-3-metric-card">
+                <span class="stage-3-metric-label">Minimum Breadth</span>
+                <span class="stage-3-metric-val" id="s4-metric-breadth">5</span>
+              </div>
+            </div>
+
+            <!-- Survivors List Card -->
+            <div class="stage-4-survivors-card" id="stage-4-survivors-card">
+              <div class="survivors-card-header">
+                <div class="survivors-title-group">
+                  <h3 class="survivors-card-title">Technical Survivors</h3>
+                  <span class="survivors-card-desc">Constituents that passed both oversold and turning criteria</span>
+                </div>
+                <span class="survivors-card-badge" id="s4-survivors-count-badge">0 survivors</span>
+              </div>
+              <div class="survivors-card-body" id="s4-survivors-list-body">
+                <p class="table-empty-row">Run pipeline or compute indicators to perform technical screen.</p>
+              </div>
+            </div>
+
+            <!-- Detailed Screening Breakdown Table -->
+            <div class="stage-4-table-wrapper">
+              <div class="table-header-bar">
+                <div class="table-title-group">
+                  <h3 class="table-title">Constituent Technical Screening Breakdown</h3>
+                  <span class="table-subtitle">Each aligned constituent is evaluated on Oversold (RSI &lt; threshold) and Turning (H_t &gt; H_t-N). Failed rules quote exact failing values.</span>
+                </div>
+                <div class="table-stats-group" id="stage-4-table-stats"></div>
+              </div>
+              <div class="table-scroll-container">
+                <table class="apple-data-table" id="stage-4-screen-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Ticker</th>
+                      <th scope="col">Sector</th>
+                      <th scope="col">Oversold Rule (RSI &lt; Threshold)</th>
+                      <th scope="col">Turning Rule (H_t &gt; H_t-N)</th>
+                      <th scope="col">Screen Outcome</th>
+                    </tr>
+                  </thead>
+                  <tbody id="stage-4-screen-tbody">
+                    <tr>
+                      <td colspan="5" class="table-empty-row">Run the pipeline to evaluate technical screening rules.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>

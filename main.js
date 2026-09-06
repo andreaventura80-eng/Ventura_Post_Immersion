@@ -75,7 +75,9 @@ export const DEFAULT_OPENROUTER_MODEL = "anthropic/claude-3.5-sonnet";
 
 export const DEFAULT_SETTINGS = Object.freeze({
   rsiThreshold: 40,
+  baseRsiThreshold: 40,
   rsiRelaxCount: 0,
+  rsiThresholdRecord: "40",
   histogramLookback: 3,
   weightCap: 0.25,
   minimumBreadth: 5,
@@ -1007,6 +1009,12 @@ export function validateAndSetMinimumBreadth(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+
+  const hasScreenResult = appState.screenResult !== null && typeof appState.screenResult === "object";
+  if (hasScreenResult === true) {
+    renderStage4UI();
+  }
+
   return true;
 }
 
@@ -1045,6 +1053,7 @@ export function validateAndSetInvestmentAmount(rawInput) {
 /**
  * Validates and updates the RSI threshold setting.
  * Range: integer 30 to 50.
+ * A typed value resets rsiRelaxCount to 0 and re-runs technical screen live.
  *
  * @param {string|number} rawInput
  * @returns {boolean} True if accepted
@@ -1060,16 +1069,31 @@ export function validateAndSetRsiThreshold(rawInput) {
     return false;
   }
 
+  const previousSurvivors = appState.screenResult !== null && typeof appState.screenResult === "object" && Array.isArray(appState.screenResult.survivors) === true
+    ? [...appState.screenResult.survivors]
+    : [];
+
+  appState.settings.baseRsiThreshold = num;
   appState.settings.rsiThreshold = num;
+  appState.settings.rsiRelaxCount = 0;
+  appState.settings.rsiThresholdRecord = String(num);
+
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+
+  const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
+  if (hasIndicators === true) {
+    runStage4Screen(previousSurvivors);
+  }
+
   return true;
 }
 
 /**
  * Validates and updates the MACD histogram lookback (N) setting.
  * Range: integer 2 to 10.
+ * Re-runs technical screen live without re-fetching.
  *
  * @param {string|number} rawInput
  * @returns {boolean} True if accepted
@@ -1085,12 +1109,22 @@ export function validateAndSetHistogramLookback(rawInput) {
     return false;
   }
 
+  const previousSurvivors = appState.screenResult !== null && typeof appState.screenResult === "object" && Array.isArray(appState.screenResult.survivors) === true
+    ? [...appState.screenResult.survivors]
+    : [];
+
   appState.settings.histogramLookback = num;
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
   renderSignalTable();
   renderMacdPanelUI();
+
+  const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
+  if (hasIndicators === true) {
+    runStage4Screen(previousSurvivors);
+  }
+
   return true;
 }
 
@@ -2007,6 +2041,9 @@ export function alignAndCompleteStage2() {
   setStageStatus(2, "done");
   setStageStatus(3, "done");
 
+  // Run Stage 4 technical screen
+  runStage4Screen();
+
   const hasDocument = typeof document !== "undefined";
   if (hasDocument === true) {
     const stageBody3 = document.getElementById("stage-body-3");
@@ -2014,6 +2051,12 @@ export function alignAndCompleteStage2() {
     if (stageBody3 !== null && stageHeader3 !== null) {
       stageBody3.classList.remove("collapsed");
       stageHeader3.setAttribute("aria-expanded", "true");
+    }
+    const stageBody4 = document.getElementById("stage-body-4");
+    const stageHeader4 = document.getElementById("stage-header-4");
+    if (stageBody4 !== null && stageHeader4 !== null) {
+      stageBody4.classList.remove("collapsed");
+      stageHeader4.setAttribute("aria-expanded", "true");
     }
     const stageSection3 = document.getElementById("stage-section-3");
     if (stageSection3 !== null) {
@@ -2829,6 +2872,8 @@ export function histogramPair(series, N) {
       const hasHistSeries = Array.isArray(series.histogramSeries) === true;
       if (hasHistSeries === true) {
         histArr = series.histogramSeries;
+      } else if (Array.isArray(series.histogram) === true) {
+        histArr = series.histogram;
       }
     }
   }
@@ -4842,6 +4887,486 @@ export function setupStage3() {
 }
 
 /**
+ * Executes a controlled relaxation of the RSI threshold by +5 up to 50.
+ * Sets rsiThreshold to min(current + 5, 50), increments rsiRelaxCount,
+ * records "base, relaxed once" format, updates settings without re-fetching,
+ * re-runs technical screen live, and invalidates stages 5 to 8 if survivors changed and labels exist.
+ *
+ * @returns {boolean} True if relaxation succeeded, false if already at 50
+ */
+export function relaxRsiThreshold() {
+  const currentThreshold = appState.settings.rsiThreshold;
+  const isAtMax = currentThreshold >= 50;
+  if (isAtMax === true) {
+    return false;
+  }
+
+  const previousSurvivors = appState.screenResult !== null && typeof appState.screenResult === "object" && Array.isArray(appState.screenResult.survivors) === true
+    ? [...appState.screenResult.survivors]
+    : [];
+
+  const hasBase = typeof appState.settings.baseRsiThreshold === "number";
+  if (hasBase === false) {
+    appState.settings.baseRsiThreshold = currentThreshold;
+  }
+
+  const nextThreshold = Math.min(currentThreshold + 5, 50);
+  appState.settings.rsiThreshold = nextThreshold;
+
+  const nextCount = (appState.settings.rsiRelaxCount || 0) + 1;
+  appState.settings.rsiRelaxCount = nextCount;
+
+  const relaxText = nextCount === 1 ? "relaxed once" : `relaxed ${nextCount} times`;
+  appState.settings.rsiThresholdRecord = `${appState.settings.baseRsiThreshold}, ${relaxText}`;
+
+  clearSettingsError();
+  renderSettingsUI();
+  updatePreflightCard();
+
+  const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
+  if (hasIndicators === true) {
+    runStage4Screen(previousSurvivors);
+  }
+
+  return true;
+}
+
+/**
+ * Screens aligned constituents on two technical rules:
+ * 1. Oversold: last RSI < rsiThreshold
+ * 2. Turning: H_t > H_(t-N) via histogramPair
+ *
+ * A constituent passes when both conditions are true.
+ * Order of survivors strictly matches the universe order.
+ *
+ * @param {object} indicatorSeries - Indicator state from Stage 3
+ * @param {number} rsiThreshold - Maximum RSI threshold (e.g. 40)
+ * @param {number} N - MACD histogram lookback session offset (e.g. 3)
+ * @returns {object} Full screening audit object with survivors, byTicker, results, and reasons
+ */
+export function screenTickers(indicatorSeries, rsiThreshold, N) {
+  const hasSeries = indicatorSeries !== null && typeof indicatorSeries === "object";
+  if (hasSeries === false) {
+    return {
+      survivors: [],
+      byTicker: {},
+      results: [],
+      rsiThreshold: rsiThreshold,
+      histogramLookback: N,
+      survivorCount: 0,
+      totalEvaluated: 0
+    };
+  }
+
+  const threshold = typeof rsiThreshold === "number" ? rsiThreshold : 40;
+  const lookback = typeof N === "number" ? N : 3;
+
+  // Gather candidate tickers in universe order
+  let candidateTickers = [];
+  if (Array.isArray(indicatorSeries.tickers) === true) {
+    candidateTickers = [...indicatorSeries.tickers];
+  } else if (indicatorSeries.rsi !== null && typeof indicatorSeries.rsi === "object") {
+    candidateTickers = Object.keys(indicatorSeries.rsi);
+  }
+
+  // Preserve strict universe order
+  const hasUniverse = appState.universe !== null && Array.isArray(appState.universe) === true;
+  if (hasUniverse === true) {
+    const universeOrder = appState.universe.map((u) => u.ticker).filter((t) => t !== "SPY");
+    const candidateSet = new Set(candidateTickers);
+    const sorted = universeOrder.filter((t) => candidateSet.has(t));
+    if (sorted.length === candidateTickers.length) {
+      candidateTickers = sorted;
+    }
+  }
+
+  const survivors = [];
+  const byTicker = {};
+  const results = [];
+
+  for (let i = 0; i < candidateTickers.length; i += 1) {
+    const ticker = candidateTickers[i];
+    const rsiObj = indicatorSeries.rsi !== undefined && indicatorSeries.rsi !== null ? indicatorSeries.rsi[ticker] : null;
+    const macdObj = indicatorSeries.macd !== undefined && indicatorSeries.macd !== null ? indicatorSeries.macd[ticker] : null;
+
+    // Evaluate history sufficiency
+    const isRsiInsufficient = rsiObj === null || rsiObj === undefined || rsiObj.insufficientHistory === true;
+    const isMacdInsufficient = macdObj === null || macdObj === undefined || macdObj.insufficientHistory === true;
+
+    // 1. Oversold rule: last RSI < rsiThreshold
+    let currentRsi = null;
+    let isOversold = false;
+    let oversoldReason = null;
+
+    if (isRsiInsufficient === true) {
+      isOversold = false;
+      oversoldReason = "RSI unavailable (insufficient history)";
+    } else {
+      currentRsi = typeof rsiObj.currentRsi === "number" ? rsiObj.currentRsi : (typeof rsiObj.lastRsi === "number" ? rsiObj.lastRsi : null);
+      const isValidRsi = typeof currentRsi === "number" && !isNaN(currentRsi);
+      if (isValidRsi === true) {
+        isOversold = currentRsi < threshold;
+        if (isOversold === false) {
+          oversoldReason = `RSI ${currentRsi.toFixed(2)} is not below ${threshold}`;
+        }
+      } else {
+        isOversold = false;
+        oversoldReason = "RSI calculation unavailable";
+      }
+    }
+
+    // 2. Turning rule: H_t > H_(t-N) via histogramPair
+    let currentHist = null;
+    let laggedHist = null;
+    let isTurning = false;
+    let turningReason = null;
+
+    if (isMacdInsufficient === true) {
+      isTurning = false;
+      turningReason = "Histogram unavailable (insufficient history)";
+    } else {
+      const pair = histogramPair(macdObj, lookback);
+      const isPairInsufficient = pair.insufficientHistory === true;
+      if (isPairInsufficient === true) {
+        isTurning = false;
+        const reqValues = typeof pair.requiredHistogramValues === "number" ? pair.requiredHistogramValues : (34 + lookback);
+        turningReason = `Histogram lookback unavailable (${reqValues} sessions required)`;
+      } else {
+        currentHist = pair.current;
+        laggedHist = pair.lagged;
+        const hasValidHistValues = typeof currentHist === "number" && typeof laggedHist === "number";
+        if (hasValidHistValues === true) {
+          isTurning = currentHist > laggedHist;
+          if (isTurning === false) {
+            const curStr = currentHist.toFixed(4);
+            const lagStr = laggedHist.toFixed(4);
+            turningReason = `Histogram ${curStr} is not above ${lagStr} (${lookback} sessions ago)`;
+          }
+        } else {
+          isTurning = false;
+          turningReason = "Histogram values unavailable";
+        }
+      }
+    }
+
+    // Name passes screen if and only if both conditions are true
+    const passesScreen = isOversold === true && isTurning === true;
+    if (passesScreen === true) {
+      survivors.push(ticker);
+    }
+
+    const failedReasons = [];
+    if (oversoldReason !== null) {
+      failedReasons.push(oversoldReason);
+    }
+    if (turningReason !== null) {
+      failedReasons.push(turningReason);
+    }
+
+    const itemResult = {
+      ticker: ticker,
+      isOversold: isOversold,
+      isTurning: isTurning,
+      passes: passesScreen,
+      passesScreen: passesScreen,
+      rsi: currentRsi,
+      rsiThreshold: threshold,
+      oversoldReason: oversoldReason,
+      histogramCurrent: currentHist,
+      histogramLagged: laggedHist,
+      histogramLookback: lookback,
+      turningReason: turningReason,
+      reasons: failedReasons
+    };
+
+    byTicker[ticker] = itemResult;
+    results.push(itemResult);
+  }
+
+  const output = {
+    survivors: survivors,
+    byTicker: byTicker,
+    results: results,
+    rsiThreshold: threshold,
+    histogramLookback: lookback,
+    survivorCount: survivors.length,
+    totalEvaluated: candidateTickers.length
+  };
+
+  // Assign direct ticker properties on output object
+  for (let i = 0; i < results.length; i += 1) {
+    const r = results[i];
+    output[r.ticker] = r;
+  }
+
+  return output;
+}
+
+/**
+ * Runs the Stage 4 technical screen live, stores survivors in appState.screenResult,
+ * sets Stage 4 status to "done", applies stage invalidation if survivors changed and labels exist,
+ * and updates the Stage 4 UI.
+ *
+ * @param {string[]|null} [previousSurvivors] - Prior list of survivor tickers to detect set changes
+ * @returns {object|null} The screen result object
+ */
+export function runStage4Screen(previousSurvivors = null) {
+  const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
+  if (hasIndicators === false) {
+    return null;
+  }
+
+  let prevSurvivorsList = [];
+  if (previousSurvivors !== null && Array.isArray(previousSurvivors) === true) {
+    prevSurvivorsList = previousSurvivors;
+  } else if (appState.screenResult !== null && Array.isArray(appState.screenResult.survivors) === true) {
+    prevSurvivorsList = [...appState.screenResult.survivors];
+  }
+
+  const rsiThreshold = appState.settings.rsiThreshold;
+  const lookback = appState.settings.histogramLookback;
+
+  const result = screenTickers(appState.indicatorSeries, rsiThreshold, lookback);
+  appState.screenResult = result;
+  setStageStatus(4, "done");
+
+  // Invalidation check: when survivor set changes and labels exist, mark stages 5 to 8 as stale
+  const newSurvivors = result.survivors;
+  let survivorsChanged = prevSurvivorsList.length !== newSurvivors.length;
+  if (survivorsChanged === false) {
+    for (let i = 0; i < prevSurvivorsList.length; i += 1) {
+      if (prevSurvivorsList[i] !== newSurvivors[i]) {
+        survivorsChanged = true;
+        break;
+      }
+    }
+  }
+
+  const hasLabels = appState.labels !== null && typeof appState.labels === "object" && Object.keys(appState.labels).length > 0;
+  if (survivorsChanged === true && hasLabels === true) {
+    markStagesStale(5);
+  }
+
+  renderStage4UI();
+  return result;
+}
+
+/**
+ * Renders the Stage 4 technical screen user interface:
+ * 1. Early warning card if technical survivors < minimumBreadth (with Relax RSI button)
+ * 2. Summary metrics cards (Survivors, Oversold Gate, Turning Gate, Minimum Breadth)
+ * 3. Survivors list card in universe order
+ * 4. Comprehensive breakdown table with pass/fail badges and reasons quoting failing values
+ */
+export function renderStage4UI() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const placeholderEl = document.getElementById("stage-4-placeholder");
+  const containerEl = document.getElementById("stage-4-container");
+  const hasScreenResult = appState.screenResult !== null && typeof appState.screenResult === "object";
+
+  if (hasScreenResult === false) {
+    if (placeholderEl !== null) {
+      placeholderEl.classList.remove("hidden");
+    }
+    if (containerEl !== null) {
+      containerEl.classList.add("hidden");
+    }
+    return;
+  }
+
+  if (placeholderEl !== null) {
+    placeholderEl.classList.add("hidden");
+  }
+  if (containerEl !== null) {
+    containerEl.classList.remove("hidden");
+  }
+
+  const result = appState.screenResult;
+  const survivorCount = result.survivorCount;
+  const totalCount = result.totalEvaluated;
+  const minBreadth = appState.settings.minimumBreadth;
+  const rsiThreshold = appState.settings.rsiThreshold;
+  const lookback = appState.settings.histogramLookback;
+
+  // 1. Summary Bar
+  const metricSurvivorsEl = document.getElementById("s4-metric-survivors");
+  if (metricSurvivorsEl !== null) {
+    metricSurvivorsEl.textContent = `${survivorCount} of ${totalCount} passed`;
+  }
+  const metricOversoldEl = document.getElementById("s4-metric-oversold");
+  if (metricOversoldEl !== null) {
+    metricOversoldEl.textContent = `RSI < ${rsiThreshold}`;
+  }
+  const metricTurningEl = document.getElementById("s4-metric-turning");
+  if (metricTurningEl !== null) {
+    metricTurningEl.textContent = `H_t > H_(t-${lookback})`;
+  }
+  const metricBreadthEl = document.getElementById("s4-metric-breadth");
+  if (metricBreadthEl !== null) {
+    metricBreadthEl.textContent = `${minBreadth} required`;
+  }
+
+  // 2. Early Warning Card and Relax RSI Action
+  const warningCard = document.getElementById("stage-4-warning-card");
+  const warningTextEl = document.getElementById("stage-4-warning-text");
+  const relaxBtn = document.getElementById("btn-relax-rsi");
+  const relaxNoteEl = document.getElementById("stage-4-relax-note");
+
+  const isBelowBreadth = survivorCount < minBreadth;
+  if (warningCard !== null) {
+    if (isBelowBreadth === true) {
+      warningCard.classList.remove("hidden");
+
+      if (warningTextEl !== null) {
+        warningTextEl.textContent = `This is an early warning: technical survivor count (${survivorCount}) is below minimum breadth (${minBreadth}). The binding breadth check happens after the text gate.`;
+      }
+
+      const isAtMax = rsiThreshold >= 50;
+      if (relaxBtn !== null) {
+        if (isAtMax === true) {
+          relaxBtn.disabled = true;
+          relaxBtn.setAttribute("disabled", "true");
+          relaxBtn.textContent = "Relax RSI by +5 (Max 50 reached)";
+        } else {
+          relaxBtn.disabled = false;
+          relaxBtn.removeAttribute("disabled");
+          relaxBtn.textContent = "Relax RSI by +5";
+        }
+      }
+
+      if (relaxNoteEl !== null) {
+        const relaxCount = appState.settings.rsiRelaxCount || 0;
+        const relaxText = relaxCount > 0 ? ` (${appState.settings.rsiThresholdRecord})` : "";
+        if (isAtMax === true) {
+          relaxNoteEl.textContent = `Threshold at maximum 50${relaxText}. Cannot be relaxed further.`;
+        } else {
+          const nextTarget = Math.min(rsiThreshold + 5, 50);
+          relaxNoteEl.textContent = `Current threshold: ${rsiThreshold}${relaxText}. Pressing sets threshold to ${nextTarget}.`;
+        }
+      }
+    } else {
+      warningCard.classList.add("hidden");
+    }
+  }
+
+  // 3. Survivors List Card
+  const universe = appState.universe || DEFAULT_UNIVERSE;
+  const sectorMap = new Map();
+  for (let u = 0; u < universe.length; u += 1) {
+    sectorMap.set(universe[u].ticker, universe[u].sector);
+  }
+
+  const survivorsBadge = document.getElementById("s4-survivors-count-badge");
+  if (survivorsBadge !== null) {
+    survivorsBadge.textContent = `${survivorCount} survivor${survivorCount === 1 ? "" : "s"}`;
+  }
+
+  const survivorsBody = document.getElementById("s4-survivors-list-body");
+  if (survivorsBody !== null) {
+    if (survivorCount > 0) {
+      const chipsHtml = result.survivors.map((ticker) => {
+        const item = result.byTicker[ticker];
+        const sector = sectorMap.get(ticker) || "Equity";
+        const rsiDisplay = item && typeof item.rsi === "number" ? item.rsi.toFixed(2) : "--";
+        const htDisplay = item && typeof item.histogramCurrent === "number" ? (item.histogramCurrent >= 0 ? "+" + item.histogramCurrent.toFixed(4) : item.histogramCurrent.toFixed(4)) : "--";
+        return `
+          <div class="survivor-chip" id="survivor-chip-${ticker}">
+            <span class="survivor-chip-ticker">${ticker}</span>
+            <span class="survivor-chip-sector">${sector}</span>
+            <span class="survivor-chip-metric">RSI: ${rsiDisplay}</span>
+            <span class="survivor-chip-metric">H_t: ${htDisplay}</span>
+          </div>
+        `;
+      }).join("");
+
+      survivorsBody.innerHTML = `<div class="survivors-chips-grid">${chipsHtml}</div>`;
+    } else {
+      survivorsBody.innerHTML = `<p class="table-empty-row">No tickers passed both technical screening criteria. Relax the RSI threshold or adjust parameters to broaden the candidate set.</p>`;
+    }
+  }
+
+  // 4. Screening Breakdown Table
+  const tbodyEl = document.getElementById("stage-4-screen-tbody");
+  if (tbodyEl !== null) {
+    const rowsHtml = result.results.map((item) => {
+      const ticker = item.ticker;
+      const sector = sectorMap.get(ticker) || "Equity";
+
+      // Oversold badge & details
+      let oversoldCell = "";
+      if (item.isOversold === true) {
+        const rsiVal = typeof item.rsi === "number" ? item.rsi.toFixed(2) : "--";
+        oversoldCell = `<span class="badge-status-pass">Pass</span> <span class="screen-metric-text">RSI ${rsiVal} &lt; ${rsiThreshold}</span>`;
+      } else {
+        oversoldCell = `<span class="badge-status-fail">Fail</span> <span class="screen-reason-text">${item.oversoldReason}</span>`;
+      }
+
+      // Turning badge & details
+      let turningCell = "";
+      if (item.isTurning === true) {
+        const curVal = typeof item.histogramCurrent === "number" ? (item.histogramCurrent >= 0 ? "+" + item.histogramCurrent.toFixed(4) : item.histogramCurrent.toFixed(4)) : "--";
+        const lagVal = typeof item.histogramLagged === "number" ? (item.histogramLagged >= 0 ? "+" + item.histogramLagged.toFixed(4) : item.histogramLagged.toFixed(4)) : "--";
+        turningCell = `<span class="badge-status-pass">Pass</span> <span class="screen-metric-text">H_t (${curVal}) &gt; H_(t-${lookback}) (${lagVal})</span>`;
+      } else {
+        turningCell = `<span class="badge-status-fail">Fail</span> <span class="screen-reason-text">${item.turningReason}</span>`;
+      }
+
+      // Outcome badge
+      let outcomeCell = "";
+      if (item.passesScreen === true) {
+        outcomeCell = `<span class="badge-survivor">Survivor</span>`;
+      } else {
+        outcomeCell = `<span class="badge-eliminated">Eliminated</span>`;
+      }
+
+      return `
+        <tr id="stage-4-row-${ticker}" class="${item.passesScreen === true ? "row-survivor" : "row-eliminated"}">
+          <td>
+            <div class="ticker-cell-group">
+              <span class="ticker-code">${ticker}</span>
+            </div>
+          </td>
+          <td><span class="sector-text">${sector}</span></td>
+          <td>${oversoldCell}</td>
+          <td>${turningCell}</td>
+          <td>${outcomeCell}</td>
+        </tr>
+      `;
+    }).join("");
+
+    tbodyEl.innerHTML = rowsHtml;
+  }
+}
+
+/**
+ * Sets up Stage 4 user interactions and button handlers.
+ */
+export function setupStage4() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  // Delegated click handler for Relax RSI button
+  document.addEventListener("click", (evt) => {
+    const target = evt.target;
+    if (target === null || target === undefined) {
+      return;
+    }
+    const relaxBtn = target.closest("#btn-relax-rsi, .btn-relax-rsi");
+    if (relaxBtn !== null) {
+      relaxRsiThreshold();
+    }
+  });
+
+  renderStage4UI();
+}
+
+/**
  * Updates all settings input fields in the DOM from appState.settings.
  */
 export function renderSettingsUI() {
@@ -4856,8 +5381,38 @@ export function renderSettingsUI() {
   }
 
   const rsiRelaxSpan = document.getElementById("rsi-relax-count-val");
+  const rsiRelaxStatus = document.getElementById("rsi-relax-status");
+  const relaxCount = appState.settings.rsiRelaxCount || 0;
+
   if (rsiRelaxSpan !== null) {
-    rsiRelaxSpan.textContent = String(appState.settings.rsiRelaxCount || 0);
+    if (relaxCount === 0) {
+      rsiRelaxSpan.textContent = "0";
+    } else if (relaxCount === 1) {
+      rsiRelaxSpan.textContent = "1 (relaxed once)";
+    } else {
+      rsiRelaxSpan.textContent = `${relaxCount} (relaxed ${relaxCount} times)`;
+    }
+  }
+
+  if (rsiRelaxStatus !== null) {
+    if (relaxCount === 0) {
+      rsiRelaxStatus.textContent = "";
+      rsiRelaxStatus.classList.add("hidden");
+    } else {
+      const relaxWord = relaxCount === 1 ? "relaxed once" : `relaxed ${relaxCount} times`;
+      rsiRelaxStatus.textContent = `${appState.settings.baseRsiThreshold || 40}, ${relaxWord}`;
+      rsiRelaxStatus.classList.remove("hidden");
+    }
+  }
+
+  const rsiHint = document.getElementById("hint-rsi-threshold");
+  if (rsiHint !== null) {
+    if (relaxCount > 0) {
+      const relaxWord = relaxCount === 1 ? "relaxed once" : `relaxed ${relaxCount} times`;
+      rsiHint.textContent = `Currently ${appState.settings.rsiThreshold} (${appState.settings.baseRsiThreshold || 40}, ${relaxWord}). Integer 30 to 50.`;
+    } else {
+      rsiHint.textContent = "Integer 30 to 50. Floor for oversold technical screen.";
+    }
   }
 
   const histInput = document.getElementById("setting-histogram-lookback");
@@ -5212,6 +5767,11 @@ if (hasWindow === true) {
   window.setSignalDrilldown = setSignalDrilldown;
   window.closeSignalDrilldown = closeSignalDrilldown;
   window.activeSignalDrilldown = activeSignalDrilldown;
+  window.relaxRsiThreshold = relaxRsiThreshold;
+  window.screenTickers = screenTickers;
+  window.runStage4Screen = runStage4Screen;
+  window.renderStage4UI = renderStage4UI;
+  window.setupStage4 = setupStage4;
 }
 
 function initializeApp() {
@@ -5222,6 +5782,7 @@ function initializeApp() {
   setupSettingsPanel();
   setupStage2();
   setupStage3();
+  setupStage4();
 }
 
 const hasDocument = typeof document !== "undefined";
