@@ -2521,4 +2521,295 @@ tr.histogram-active {
   background-color: #ffffff;
 }
 
+/* Prompt 8: Signal Table and Transparency Drill-Down Styles */
+.signal-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.signal-metric-btn {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--apple-text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 1.5px dotted var(--apple-blue);
+  border-radius: 5px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.signal-metric-btn:hover {
+  background-color: rgba(0, 113, 227, 0.08);
+  border-color: var(--apple-blue);
+  color: var(--apple-blue);
+}
+
+.signal-metric-btn.active {
+  background-color: var(--apple-blue);
+  border-color: var(--apple-blue);
+  color: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 113, 227, 0.25);
+}
+
+.signal-metric-btn.metric-positive {
+  color: #166534;
+}
+
+.signal-metric-btn.metric-positive:hover {
+  background-color: #f0fdf4;
+}
+
+.signal-metric-btn.metric-negative {
+  color: #991b1b;
+}
+
+.signal-metric-btn.metric-negative:hover {
+  background-color: #fef2f2;
+}
+
+.signal-metric-btn.active.metric-positive,
+.signal-metric-btn.active.metric-negative {
+  color: #ffffff;
+  background-color: var(--apple-blue);
+}
+
+tr.row-insufficient-history {
+  background-color: #f8fafc;
+  color: var(--apple-text-secondary);
+  opacity: 0.8;
+}
+
+tr.row-insufficient-history td {
+  padding: 12px 14px;
+}
+
+tr.row-insufficient-history .ticker-code {
+  color: var(--apple-text-secondary);
+}
+
+tr.signal-drilldown-row {
+  background-color: #fafbfc;
+}
+
+tr.signal-drilldown-row td {
+  padding: 0 !important;
+  border-top: none !important;
+}
+
+.drilldown-cell-wrapper {
+  padding: 10px 14px 18px 14px !important;
+}
+
+.drilldown-card {
+  background: #ffffff;
+  border: 1px solid var(--apple-border);
+  border-radius: 12px;
+  padding: 1.25rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
+}
+
+.drilldown-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--apple-border);
+  margin-bottom: 14px;
+}
+
+.drilldown-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.drilldown-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--apple-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drilldown-subtitle {
+  font-size: 12px;
+  color: var(--apple-text-secondary);
+}
+
+.drilldown-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drilldown-nav-pills {
+  display: inline-flex;
+  background: var(--apple-bg);
+  border: 1px solid var(--apple-border);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.drilldown-nav-pill {
+  border: none;
+  background: transparent;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--apple-text-secondary);
+  transition: all 0.15s ease;
+}
+
+.drilldown-nav-pill:hover {
+  color: var(--apple-text-primary);
+}
+
+.drilldown-nav-pill.active {
+  background: #ffffff;
+  color: var(--apple-blue);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.btn-drilldown-close {
+  background: transparent;
+  border: 1px solid var(--apple-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--apple-text-secondary);
+  transition: all 0.15s ease;
+}
+
+.btn-drilldown-close:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+  background: #fef2f2;
+}
+
+.drilldown-note-card {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-left: 4px solid #16a34a;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #166534;
+  margin-bottom: 14px;
+}
+
+.drilldown-note-card strong {
+  font-weight: 700;
+}
+
+.drilldown-metrics-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.drilldown-metric-box {
+  background: var(--apple-bg);
+  border: 1px solid var(--apple-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.drilldown-metric-box.highlight {
+  border-color: rgba(0, 113, 227, 0.35);
+  background: #f8fafc;
+}
+
+.drilldown-box-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--apple-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.drilldown-box-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--apple-text-primary);
+  word-break: break-all;
+}
+
+.drilldown-box-note {
+  font-size: 11px;
+  color: var(--apple-text-secondary);
+  line-height: 1.3;
+}
+
+.drilldown-formula-card {
+  background: #f8fafc;
+  border: 1px solid var(--apple-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--apple-text-primary);
+  word-break: break-all;
+}
+
+.drilldown-formula-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.drilldown-formula-step:last-child {
+  margin-bottom: 0;
+}
+
+.drilldown-table-wrapper {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--apple-border);
+  border-radius: 8px;
+}
+
+.drilldown-table-wrapper table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.drilldown-table-wrapper thead th {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  z-index: 2;
+  font-size: 11px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--apple-border);
+}
+
+.drilldown-table-wrapper tbody td {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+
 

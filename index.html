@@ -494,8 +494,11 @@
 
             <!-- Stage 3 Navigation Tabs -->
             <div class="stage-3-tabs" role="tablist">
-              <button type="button" class="stage-3-tab active" id="tab-volatilities" role="tab" aria-selected="true" aria-controls="panel-volatilities">
-                Annualized Volatilities & Returns
+              <button type="button" class="stage-3-tab active" id="tab-signals" role="tab" aria-selected="true" aria-controls="panel-signals">
+                Signal Table & Drill-Down
+              </button>
+              <button type="button" class="stage-3-tab" id="tab-volatilities" role="tab" aria-selected="false" aria-controls="panel-volatilities">
+                Volatilities & Matrix Diagonal
               </button>
               <button type="button" class="stage-3-tab" id="tab-covariance" role="tab" aria-selected="false" aria-controls="panel-covariance">
                 Covariance Matrix (<span id="cov-matrix-dims">--</span>)
@@ -511,8 +514,38 @@
               </button>
             </div>
 
+            <!-- Panel 0: Signal Table with Transparency Drill-Down (Prompt 8) -->
+            <div class="stage-3-panel active" id="panel-signals" role="tabpanel" aria-labelledby="tab-signals">
+              <div class="table-header-bar">
+                <div class="table-title-group">
+                  <h3 class="table-title">Indicator Signal Table with Transparency Drill-Down</h3>
+                  <span class="table-subtitle">Unrounded mathematical transparency. Click any numeric cell to reveal the raw inputs and recursion behind it.</span>
+                </div>
+                <div class="table-stats-group" id="signals-table-stats"></div>
+              </div>
+              <div class="table-scroll-container">
+                <table class="apple-data-table signal-table" id="signal-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Ticker</th>
+                      <th scope="col">Sector</th>
+                      <th scope="col">RSI</th>
+                      <th scope="col">H_t</th>
+                      <th scope="col" id="col-header-h-lag">H_(t-N)</th>
+                      <th scope="col">Volatility (annualized)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="signal-table-tbody">
+                    <tr>
+                      <td colspan="6" class="table-empty-row">Run the pipeline from Stage 1 to view indicator signals and unrounded transparency drill-downs.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             <!-- Panel 1: Annualized Volatilities & Returns -->
-            <div class="stage-3-panel active" id="panel-volatilities" role="tabpanel" aria-labelledby="tab-volatilities">
+            <div class="stage-3-panel" id="panel-volatilities" role="tabpanel" aria-labelledby="tab-volatilities" hidden>
               <div class="table-header-bar">
                 <div class="table-title-group">
                   <h3 class="table-title">Constituent Volatilities, Returns, RSI(14) & MACD</h3>

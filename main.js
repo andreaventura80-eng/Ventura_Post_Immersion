@@ -1089,6 +1089,8 @@ export function validateAndSetHistogramLookback(rawInput) {
   clearSettingsError();
   renderSettingsUI();
   updatePreflightCard();
+  renderSignalTable();
+  renderMacdPanelUI();
   return true;
 }
 
@@ -2711,6 +2713,8 @@ export function computeMacd(closes, fast = 12, slow = 26, signal = 9) {
       macdStartIndex: slowPeriod - 1,
       signalStartIndex: slowPeriod + signalPeriod - 2,
       histogramStartIndex: slowPeriod + signalPeriod - 2,
+      emaFast: [],
+      emaSlow: [],
       macdSeries: [],
       signalSeries: [],
       histogramSeries: [],
@@ -2780,6 +2784,8 @@ export function computeMacd(closes, fast = 12, slow = 26, signal = 9) {
     macdStartIndex: slowPeriod - 1, // 25
     signalStartIndex: baseCloseIndex, // 33
     histogramStartIndex: baseCloseIndex, // 33
+    emaFast: emaFast,
+    emaSlow: emaSlow,
     macdSeries: macdSeries,
     signalSeries: signalSeries,
     histogramSeries: histogramSeries,
@@ -2916,6 +2922,8 @@ export function computeReturnsAndCovariance() {
     rsiByTicker[ticker] = rsiResult;
     macdByTicker[ticker] = macdResult;
     perTickerData[ticker] = {
+      ticker: ticker,
+      prices: [...prices],
       returns: [...retSeries],
       dailyStd: dStd,
       annualizedVol: annVol,
@@ -2948,9 +2956,11 @@ export function computeReturnsAndCovariance() {
     const spyAnnVol = computeAnnualizedVol(spyStd);
     const spyRsi = computeRsi(spyPrices, 14);
     const spyMacd = computeMacd(spyPrices, 12, 26, 9);
-    const spyReturnDates = aligned.spy.dates.slice(1);
+    const spyDates = (aligned.spy && Array.isArray(aligned.spy.dates) === true) ? aligned.spy.dates : aligned.dates;
+    const spyReturnDates = Array.isArray(spyDates) === true ? spyDates.slice(1) : [];
     spyData = {
       dates: spyReturnDates,
+      prices: spyPrices,
       returns: spyReturns,
       dailyStd: spyStd,
       annualizedVol: spyAnnVol,
@@ -3005,6 +3015,7 @@ export function computeReturnsAndCovariance() {
   };
 
   showStage3Alert("");
+  setStageStatus(3, "done");
   renderIndicatorsUI();
 }
 
@@ -3052,6 +3063,631 @@ export function updateStage3SummaryMetrics() {
     }
     const meanVol = sumVol / ind.tickers.length;
     avgVolEl.textContent = `${(meanVol * 100).toFixed(2)}%`;
+  }
+}
+
+/**
+ * State for currently active signal table transparency drill-down.
+ */
+export let activeSignalDrilldown = {
+  ticker: null,
+  metric: null // "rsi" | "hist_current" | "hist_lagged" | "volatility"
+};
+
+/**
+ * Sets or toggles the active drill-down for a ticker and metric.
+ *
+ * @param {string} ticker
+ * @param {string} metric
+ */
+export function setSignalDrilldown(ticker, metric) {
+  const isSameTicker = activeSignalDrilldown.ticker === ticker;
+  const isSameMetric = activeSignalDrilldown.metric === metric;
+  if (isSameTicker === true && isSameMetric === true) {
+    activeSignalDrilldown.ticker = null;
+    activeSignalDrilldown.metric = null;
+  } else {
+    activeSignalDrilldown.ticker = ticker;
+    activeSignalDrilldown.metric = metric;
+  }
+  renderSignalTable();
+}
+
+/**
+ * Closes the active signal drill-down panel.
+ */
+export function closeSignalDrilldown() {
+  activeSignalDrilldown.ticker = null;
+  activeSignalDrilldown.metric = null;
+  renderSignalTable();
+}
+
+/**
+ * Generates unrounded HTML transparency drill-down for a given ticker and indicator metric.
+ *
+ * @param {string} ticker
+ * @param {string} metric - "rsi" | "hist_current" | "hist_lagged" | "volatility"
+ * @returns {string} HTML markup
+ */
+export function renderSignalDrilldownHtml(ticker, metric) {
+  const ind = appState.indicatorSeries;
+  const hasIndicators = ind !== null && typeof ind === "object";
+  if (hasIndicators === false) {
+    return `<div class="drilldown-card"><p>No indicator data available.</p></div>`;
+  }
+
+  const isSpy = ticker === "SPY";
+  const rsiObj = isSpy === true ? (ind.spy && ind.spy.rsi) : (ind.rsi && ind.rsi[ticker]);
+  const macdObj = isSpy === true ? (ind.spy && ind.spy.macd) : (ind.macd && ind.macd[ticker]);
+  const prices = (isSpy === true ? (ind.spy && ind.spy.prices) : (ind.perTicker && ind.perTicker[ticker] && ind.perTicker[ticker].prices)) || (appState.alignedData && appState.alignedData.prices && appState.alignedData.prices[ticker]) || [];
+  const dates = (isSpy === true ? ((ind.spy && ind.spy.dates) || (appState.alignedData && appState.alignedData.dates)) : (appState.alignedData && appState.alignedData.dates)) || [];
+  const lookback = typeof appState.settings.histogramLookback === "number" ? appState.settings.histogramLookback : 3;
+
+  const isRsi = metric === "rsi";
+  const isHistCurrent = metric === "hist_current";
+  const isHistLagged = metric === "hist_lagged";
+  const isHist = isHistCurrent === true || isHistLagged === true;
+  const isVol = metric === "volatility";
+
+  const headerHtml = `
+    <div class="drilldown-header">
+      <div class="drilldown-title-group">
+        <h4 class="drilldown-title">
+          <span>${ticker}</span>
+          <span style="font-weight: 400; color: var(--apple-text-secondary); font-size: 14px;">Transparency Drill-Down</span>
+        </h4>
+        <span class="drilldown-subtitle">Raw unrounded mathematical inputs and recursion</span>
+      </div>
+      <div class="drilldown-actions">
+        <div class="drilldown-nav-pills" role="tablist">
+          <button type="button" class="drilldown-nav-pill ${isRsi === true ? "active" : ""}" data-ticker="${ticker}" data-metric="rsi">RSI(14)</button>
+          <button type="button" class="drilldown-nav-pill ${isHistCurrent === true ? "active" : ""}" data-ticker="${ticker}" data-metric="hist_current">H_t (Current)</button>
+          <button type="button" class="drilldown-nav-pill ${isHistLagged === true ? "active" : ""}" data-ticker="${ticker}" data-metric="hist_lagged">H_(t-${lookback}) (Lagged)</button>
+          <button type="button" class="drilldown-nav-pill ${isVol === true ? "active" : ""}" data-ticker="${ticker}" data-metric="volatility">Volatility</button>
+        </div>
+        <button type="button" class="btn-drilldown-close" title="Close drill-down">Close ✕</button>
+      </div>
+    </div>
+  `;
+
+  let contentHtml = "";
+
+  if (isRsi === true) {
+    const hasRsi = rsiObj !== undefined && rsiObj !== null && rsiObj.insufficientHistory === false;
+    if (hasRsi === false) {
+      contentHtml = `<p class="table-empty-row">Insufficient history to compute RSI(14) for ${ticker}.</p>`;
+    } else {
+      const fixedNote = "These averages depend on the whole series. The last 15 closes alone do not reproduce this figure and are not shown as if they did.";
+      const seedAvgGain = rsiObj.seedAvgGain;
+      const seedAvgLoss = rsiObj.seedAvgLoss;
+      const finalAvgGain = rsiObj.finalAvgGain;
+      const finalAvgLoss = rsiObj.finalAvgLoss;
+      const currentRsi = rsiObj.currentRsi;
+      const seedRs = seedAvgLoss !== 0 ? (seedAvgGain / seedAvgLoss) : (seedAvgGain > 0 ? "Infinity" : 0);
+      const finalRs = finalAvgLoss !== 0 ? (finalAvgGain / finalAvgLoss) : (finalAvgGain > 0 ? "Infinity" : 0);
+
+      let tableRows = "";
+      for (let i = 0; i < prices.length; i += 1) {
+        const sessionNum = i + 1;
+        const date = dates[i] || `--`;
+        const close = prices[i];
+        let changeStr = "--";
+        let gainStr = "--";
+        let lossStr = "--";
+        let avgGainStr = "--";
+        let avgLossStr = "--";
+        let rsStr = "--";
+        let rsiStr = "--";
+
+        if (i >= 1) {
+          const change = close - prices[i - 1];
+          changeStr = String(change);
+          const gain = Math.max(0, change);
+          const loss = Math.max(0, -change);
+          gainStr = String(gain);
+          lossStr = String(loss);
+
+          if (i < 14) {
+            avgGainStr = `(accumulating seed ${sessionNum}/14)`;
+            avgLossStr = `(accumulating seed ${sessionNum}/14)`;
+          } else if (i === 14) {
+            avgGainStr = `${seedAvgGain} (seed mean)`;
+            avgLossStr = `${seedAvgLoss} (seed mean)`;
+            rsStr = String(seedRs);
+            rsiStr = String(rsiObj.rsiSeries[0]);
+          } else {
+            const seriesIdx = i - 14;
+            avgGainStr = String(rsiObj.runningAvgGains[seriesIdx]);
+            avgLossStr = String(rsiObj.runningAvgLosses[seriesIdx]);
+            const rAvgGain = rsiObj.runningAvgGains[seriesIdx];
+            const rAvgLoss = rsiObj.runningAvgLosses[seriesIdx];
+            const sRs = rAvgLoss !== 0 ? (rAvgGain / rAvgLoss) : (rAvgGain > 0 ? "Infinity" : 0);
+            rsStr = String(sRs);
+            rsiStr = String(rsiObj.rsiSeries[seriesIdx]);
+          }
+        }
+
+        const isSeedRow = i === 14;
+        const rowClass = isSeedRow === true ? "seed-init" : (i < 14 ? "seed-window" : "");
+
+        tableRows += `
+          <tr class="${rowClass}">
+            <td>${sessionNum}</td>
+            <td>${date}</td>
+            <td>${close}</td>
+            <td>${changeStr}</td>
+            <td>${gainStr}</td>
+            <td>${lossStr}</td>
+            <td>${avgGainStr}</td>
+            <td>${avgLossStr}</td>
+            <td>${rsStr}</td>
+            <td style="font-weight: 700;">${rsiStr}</td>
+          </tr>
+        `;
+      }
+
+      contentHtml = `
+        <div class="drilldown-note-card">
+          <strong>Methodological Note:</strong> ${fixedNote}
+        </div>
+        <div class="drilldown-metrics-summary">
+          <div class="drilldown-metric-box">
+            <span class="drilldown-box-label">Seed Average Gain (First 14 Gains)</span>
+            <span class="drilldown-box-value">${seedAvgGain}</span>
+            <span class="drilldown-box-note">Simple mean of positive changes in closes 1 to 15</span>
+          </div>
+          <div class="drilldown-metric-box">
+            <span class="drilldown-box-label">Seed Average Loss (First 14 Losses)</span>
+            <span class="drilldown-box-value">${seedAvgLoss}</span>
+            <span class="drilldown-box-note">Simple mean of absolute negative changes in closes 1 to 15</span>
+          </div>
+          <div class="drilldown-metric-box">
+            <span class="drilldown-box-label">Final Average Gain (Wilder Smoothed)</span>
+            <span class="drilldown-box-value">${finalAvgGain}</span>
+            <span class="drilldown-box-note">Recursive: (prevAvg * 13 + currentGain) / 14</span>
+          </div>
+          <div class="drilldown-metric-box">
+            <span class="drilldown-box-label">Final Average Loss (Wilder Smoothed)</span>
+            <span class="drilldown-box-value">${finalAvgLoss}</span>
+            <span class="drilldown-box-note">Recursive: (prevAvg * 13 + currentLoss) / 14</span>
+          </div>
+          <div class="drilldown-metric-box highlight">
+            <span class="drilldown-box-label">Current Unrounded RSI</span>
+            <span class="drilldown-box-value" style="color: var(--apple-blue);">${currentRsi}</span>
+            <span class="drilldown-box-note">100 - (100 / (1 + RS)), where RS = ${finalRs}</span>
+          </div>
+        </div>
+        <div class="drilldown-table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Session</th>
+                <th scope="col">Date</th>
+                <th scope="col">Close</th>
+                <th scope="col">Change</th>
+                <th scope="col">Gain</th>
+                <th scope="col">Loss</th>
+                <th scope="col">Average Gain</th>
+                <th scope="col">Average Loss</th>
+                <th scope="col">RS</th>
+                <th scope="col">RSI</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+  } else if (isHist === true) {
+    const hasMacd = macdObj !== undefined && macdObj !== null && macdObj.insufficientHistory === false;
+    if (hasMacd === false) {
+      contentHtml = `<p class="table-empty-row">Insufficient history to compute MACD and histogram for ${ticker}.</p>`;
+    } else {
+      const pair = histogramPair(macdObj, lookback);
+      const isTargetLagged = isHistLagged === true;
+      const targetHistIdx = isTargetLagged === true ? (macdObj.histogramSeries.length - 1 - lookback) : (macdObj.histogramSeries.length - 1);
+      const targetClosesIdx = isTargetLagged === true ? (prices.length - 1 - lookback) : (prices.length - 1);
+
+      const hasValidTarget = targetHistIdx >= 0 && targetClosesIdx >= 0;
+      if (hasValidTarget === false) {
+        contentHtml = `<p class="table-empty-row">Lookback N=${lookback} precedes the start of the histogram series.</p>`;
+      } else {
+        const inspectedDate = dates[targetClosesIdx] || "--";
+        const inspectedClose = prices[targetClosesIdx];
+        const ema12 = macdObj.emaFast[targetClosesIdx - 11];
+        const ema26 = macdObj.emaSlow[targetClosesIdx - 25];
+        const macdVal = macdObj.macdSeries[targetClosesIdx - 25];
+        const signalVal = macdObj.signalSeries[targetHistIdx];
+        const histVal = macdObj.histogramSeries[targetHistIdx];
+
+        contentHtml = `
+          <div class="drilldown-formula-card">
+            <div class="drilldown-formula-step">
+              <span style="font-weight: 700; color: var(--apple-blue);">Inspected Target:</span>
+              <span>${isTargetLagged === true ? `Lagged Session t-${lookback} (${lookback} sessions ago)` : `Current Session t (Latest)`} on Date ${inspectedDate} (Close: $${inspectedClose})</span>
+            </div>
+            <div class="drilldown-formula-step">
+              <span style="font-weight: 700;">1. Fast EMA(12):</span>
+              <span>${ema12}</span>
+            </div>
+            <div class="drilldown-formula-step">
+              <span style="font-weight: 700;">2. Slow EMA(26):</span>
+              <span>${ema26}</span>
+            </div>
+            <div class="drilldown-formula-step">
+              <span style="font-weight: 700;">3. MACD Line:</span>
+              <span>EMA(12) - EMA(26) = ${ema12} - ${ema26} = <strong style="color: var(--apple-text-primary);">${macdVal}</strong></span>
+            </div>
+            <div class="drilldown-formula-step">
+              <span style="font-weight: 700;">4. Signal Line:</span>
+              <span>EMA(9) of MACD Line = <strong style="color: var(--apple-text-primary);">${signalVal}</strong></span>
+            </div>
+            <div class="drilldown-formula-step">
+              <span style="font-weight: 700;">5. Histogram (H):</span>
+              <span>MACD Line - Signal Line = ${macdVal} - ${signalVal} = <strong style="color: var(--apple-blue);">${histVal}</strong></span>
+            </div>
+          </div>
+
+          <div class="drilldown-metrics-summary">
+            <div class="drilldown-metric-box">
+              <span class="drilldown-box-label">Current Histogram H_t</span>
+              <span class="drilldown-box-value">${pair.current}</span>
+              <span class="drilldown-box-note">Latest session close</span>
+            </div>
+            <div class="drilldown-metric-box">
+              <span class="drilldown-box-label">Lagged Histogram H_(t-${lookback})</span>
+              <span class="drilldown-box-value">${pair.lagged}</span>
+              <span class="drilldown-box-note">${lookback} sessions ago (re-read live)</span>
+            </div>
+            <div class="drilldown-metric-box">
+              <span class="drilldown-box-label">Difference (H_t - H_(t-${lookback}))</span>
+              <span class="drilldown-box-value">${pair.difference}</span>
+              <span class="drilldown-box-note">${pair.isRising === true ? "Rising (thesis condition met)" : "Falling or flat"}</span>
+            </div>
+            <div class="drilldown-metric-box highlight">
+              <span class="drilldown-box-label">Thesis Direction Rule</span>
+              <span class="drilldown-box-value" style="color: ${pair.isRising === true ? "#166534" : "#991b1b"};">${pair.isRising === true ? "Rising (H_t > H_(t-N))" : "Not Rising (H_t <= H_(t-N))"}</span>
+              <span class="drilldown-box-note">Evaluated regardless of sign</span>
+            </div>
+          </div>
+        `;
+      }
+    }
+  } else if (isVol === true) {
+    const dailyStd = isSpy === true ? (ind.spy && ind.spy.dailyStd) : (ind.dailyStd && ind.dailyStd[ticker]);
+    const annVol = isSpy === true ? (ind.spy && ind.spy.annualizedVol) : (ind.annualizedVol && ind.annualizedVol[ticker]);
+    const returns = isSpy === true ? (ind.spy && ind.spy.returns) : (ind.returns && ind.returns[ticker]);
+    const returnDates = ind.dates || [];
+
+    const hasVolData = typeof dailyStd === "number" && typeof annVol === "number" && Array.isArray(returns) === true;
+    if (hasVolData === false) {
+      contentHtml = `<p class="table-empty-row">No volatility data computed for ${ticker}.</p>`;
+    } else {
+      const sqrt252 = Math.sqrt(252);
+      const sqrt252Str = String(sqrt252);
+      const dailyStdSq = dailyStd * dailyStd;
+
+      const covIdx = Array.isArray(ind.covarianceTickers) === true ? ind.covarianceTickers.indexOf(ticker) : -1;
+      const covDiagonal = covIdx >= 0 && Array.isArray(ind.covarianceMatrix) === true && Array.isArray(ind.covarianceMatrix[covIdx]) === true ? ind.covarianceMatrix[covIdx][covIdx] : dailyStdSq;
+      const diffVariance = Math.abs(covDiagonal - dailyStdSq);
+      const meanReturn = computeSampleMean(returns);
+
+      let returnRows = "";
+      for (let i = 0; i < returns.length; i += 1) {
+        const sessionNum = i + 1;
+        const date = returnDates[i] || `--`;
+        const retVal = returns[i];
+        const diffFromMean = retVal - meanReturn;
+        const sqDiff = diffFromMean * diffFromMean;
+
+        returnRows += `
+          <tr>
+            <td>${sessionNum}</td>
+            <td>${date}</td>
+            <td>${retVal}</td>
+            <td>${diffFromMean}</td>
+            <td>${sqDiff}</td>
+          </tr>
+        `;
+      }
+
+      contentHtml = `
+        <div class="drilldown-metrics-summary">
+          <div class="drilldown-metric-box">
+            <span class="drilldown-box-label">Daily Sample Std Dev (s)</span>
+            <span class="drilldown-box-value">${dailyStd}</span>
+            <span class="drilldown-box-note">Sample standard deviation with n - 1 degrees of freedom</span>
+          </div>
+          <div class="drilldown-metric-box">
+            <span class="drilldown-box-label">Annualization Factor sqrt(252)</span>
+            <span class="drilldown-box-value">${sqrt252Str}</span>
+            <span class="drilldown-box-note">Square root of 252 annual trading sessions</span>
+          </div>
+          <div class="drilldown-metric-box highlight">
+            <span class="drilldown-box-label">Annualized Volatility</span>
+            <span class="drilldown-box-value" style="color: var(--apple-blue);">${annVol}</span>
+            <span class="drilldown-box-note">s * sqrt(252) = ${dailyStd} * ${sqrt252Str}</span>
+          </div>
+          <div class="drilldown-metric-box">
+            <span class="drilldown-box-label">Covariance Matrix Diagonal Entry</span>
+            <span class="drilldown-box-value">${covDiagonal}</span>
+            <span class="drilldown-box-note">Sample variance Cov(${ticker}, ${ticker})</span>
+          </div>
+          <div class="drilldown-metric-box">
+            <span class="drilldown-box-label">Daily Std Dev Squared (s^2)</span>
+            <span class="drilldown-box-value">${dailyStdSq}</span>
+            <span class="drilldown-box-note">Matches diagonal entry (difference: ${diffVariance})</span>
+          </div>
+        </div>
+
+        <div class="drilldown-formula-card">
+          <div class="drilldown-formula-step">
+            <span style="font-weight: 700; color: var(--apple-blue);">Equality Proof:</span>
+            <span>Covariance diagonal entry equals daily standard deviation squared: ${covDiagonal} === ${dailyStdSq}</span>
+          </div>
+          <div class="drilldown-formula-step">
+            <span style="font-weight: 700;">Return Sample Mean:</span>
+            <span>${meanReturn} across ${returns.length} sessions (degrees of freedom: ${returns.length - 1})</span>
+          </div>
+        </div>
+
+        <div class="drilldown-table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Session</th>
+                <th scope="col">Date</th>
+                <th scope="col">Daily Simple Return (r_t)</th>
+                <th scope="col">Deviation from Mean (r_t - mean)</th>
+                <th scope="col">Squared Deviation (r_t - mean)^2</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${returnRows}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+  }
+
+  return `
+    <div class="drilldown-card" id="drilldown-card-${ticker}">
+      ${headerHtml}
+      ${contentHtml}
+    </div>
+  `;
+}
+
+/**
+ * Renders the primary indicator signal table with transparency drill-down (Prompt 8).
+ * One row per constituent: Ticker, Sector, RSI, H_t, H_(t-N), Volatility.
+ * Excluded tickers for insufficient history are displayed on a greyed row.
+ * Every numeric cell is clickable to open an unrounded transparency drill-down directly under the row.
+ */
+export function renderSignalTable() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const tbody = document.getElementById("signal-table-tbody");
+  const statsEl = document.getElementById("signals-table-stats");
+  const lagHeaderEl = document.getElementById("col-header-h-lag");
+
+  const lookback = typeof appState.settings.histogramLookback === "number" ? appState.settings.histogramLookback : 3;
+  if (lagHeaderEl !== null) {
+    lagHeaderEl.textContent = `H_(t-${lookback})`;
+  }
+
+  if (tbody === null) {
+    return;
+  }
+
+  const ind = appState.indicatorSeries;
+  const hasData = ind !== null && typeof ind === "object" && Array.isArray(ind.tickers) === true && ind.tickers.length > 0;
+  if (hasData === false) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty-row">Run the pipeline from Stage 1 to generate indicator signals and unrounded transparency drill-downs.</td></tr>`;
+    if (statsEl !== null) {
+      statsEl.textContent = "";
+    }
+    return;
+  }
+
+  const universe = appState.universe || DEFAULT_UNIVERSE;
+  const sectorMap = new Map();
+  for (let i = 0; i < universe.length; i += 1) {
+    sectorMap.set(universe[i].ticker, universe[i].sector);
+  }
+
+  const selectedConstituents = (appState.selectedTickers || []).filter((t) => t !== "SPY");
+  const constituentList = selectedConstituents.length > 0 ? selectedConstituents : ind.tickers;
+
+  let html = "";
+  let validSignalsCount = 0;
+  let insufficientCount = 0;
+
+  for (let i = 0; i < constituentList.length; i += 1) {
+    const ticker = constituentList[i];
+    const sector = sectorMap.get(ticker) || "Equity";
+
+    const isAligned = ind.tickers.includes(ticker);
+    const priceStatusObj = appState.priceStatus[ticker];
+    const isStage2Insufficient = priceStatusObj !== undefined && priceStatusObj.status === "insufficient";
+
+    const rsiData = (ind.rsi && ind.rsi[ticker]) || (ind.perTicker && ind.perTicker[ticker] && ind.perTicker[ticker].rsi);
+    const macdData = (ind.macd && ind.macd[ticker]) || (ind.perTicker && ind.perTicker[ticker] && ind.perTicker[ticker].macd);
+
+    const isRsiInsufficient = rsiData === undefined || rsiData === null || rsiData.insufficientHistory === true;
+    const isMacdInsufficient = macdData === undefined || macdData === null || macdData.insufficientHistory === true;
+
+    const rowHasSufficientHistory = isAligned === true && isStage2Insufficient === false && isRsiInsufficient === false && isMacdInsufficient === false;
+
+    if (rowHasSufficientHistory === true) {
+      validSignalsCount += 1;
+      const rsiVal = rsiData.currentRsi;
+      const htVal = macdData.currentHistogram;
+      const pair = histogramPair(macdData, lookback);
+      const annVol = ind.annualizedVol[ticker];
+
+      const rsiDisplay = typeof rsiVal === "number" ? rsiVal.toFixed(2) : "--";
+      const htDisplay = typeof htVal === "number" ? (htVal >= 0 ? "+" + htVal.toFixed(4) : htVal.toFixed(4)) : "--";
+      const pairSufficient = pair.insufficientHistory === false;
+      const htLagDisplay = pairSufficient === true ? (pair.lagged >= 0 ? "+" + pair.lagged.toFixed(4) : pair.lagged.toFixed(4)) : "insufficient history";
+      const volDisplay = typeof annVol === "number" ? (annVol * 100).toFixed(2) + "%" : "--";
+
+      const isRsiActive = activeSignalDrilldown.ticker === ticker && activeSignalDrilldown.metric === "rsi";
+      const isHtActive = activeSignalDrilldown.ticker === ticker && activeSignalDrilldown.metric === "hist_current";
+      const isHtLagActive = activeSignalDrilldown.ticker === ticker && activeSignalDrilldown.metric === "hist_lagged";
+      const isVolActive = activeSignalDrilldown.ticker === ticker && activeSignalDrilldown.metric === "volatility";
+
+      const htClass = typeof htVal === "number" && htVal >= 0 ? "metric-positive" : "metric-negative";
+      const htLagClass = pairSufficient === true && pair.lagged >= 0 ? "metric-positive" : "metric-negative";
+
+      html += `
+        <tr id="signal-row-${ticker}">
+          <td>
+            <div class="ticker-cell-group">
+              <span class="ticker-code">${ticker}</span>
+            </div>
+          </td>
+          <td><span class="sector-text">${sector}</span></td>
+          <td>
+            <button type="button" class="signal-metric-btn btn-drilldown ${isRsiActive === true ? "active" : ""}" data-ticker="${ticker}" data-metric="rsi" title="Click to inspect raw unrounded RSI recursion">
+              ${rsiDisplay}
+            </button>
+          </td>
+          <td>
+            <button type="button" class="signal-metric-btn btn-drilldown ${htClass} ${isHtActive === true ? "active" : ""}" data-ticker="${ticker}" data-metric="hist_current" title="Click to inspect raw unrounded H_t inputs">
+              ${htDisplay}
+            </button>
+          </td>
+          <td>
+            ${pairSufficient === true ? `
+              <button type="button" class="signal-metric-btn btn-drilldown ${htLagClass} ${isHtLagActive === true ? "active" : ""}" data-ticker="${ticker}" data-metric="hist_lagged" title="Click to inspect raw unrounded H_(t-${lookback}) inputs">
+                ${htLagDisplay}
+              </button>
+            ` : `<span class="badge-insufficient">insufficient history</span>`}
+          </td>
+          <td>
+            <button type="button" class="signal-metric-btn btn-drilldown ${isVolActive === true ? "active" : ""}" data-ticker="${ticker}" data-metric="volatility" title="Click to inspect raw unrounded volatility and covariance diagonal">
+              ${volDisplay}
+            </button>
+          </td>
+        </tr>
+      `;
+
+      const isRowDrilldownActive = activeSignalDrilldown.ticker === ticker;
+      if (isRowDrilldownActive === true) {
+        html += `
+          <tr class="signal-drilldown-row" id="drilldown-row-${ticker}">
+            <td colspan="6" class="drilldown-cell-wrapper">
+              ${renderSignalDrilldownHtml(ticker, activeSignalDrilldown.metric)}
+            </td>
+          </tr>
+        `;
+      }
+    } else {
+      insufficientCount += 1;
+      const reason = isStage2Insufficient === true ? "insufficient history (< 200 sessions in alignment)" : "insufficient history";
+      html += `
+        <tr class="row-insufficient-history" id="signal-row-${ticker}">
+          <td>
+            <div class="ticker-cell-group">
+              <span class="ticker-code">${ticker}</span>
+            </div>
+          </td>
+          <td><span class="sector-text">${sector}</span></td>
+          <td colspan="4">
+            <span class="badge-insufficient">${reason}</span>
+          </td>
+        </tr>
+      `;
+    }
+  }
+
+  // Benchmark SPY row
+  const hasSpy = ind.spy !== null && ind.spy !== undefined;
+  if (hasSpy === true) {
+    const spyRsi = ind.spy.rsi;
+    const spyMacd = ind.spy.macd;
+    const spyVol = ind.spy.annualizedVol;
+
+    const isSpyRsiInsufficient = spyRsi === undefined || spyRsi === null || spyRsi.insufficientHistory === true;
+    const isSpyMacdInsufficient = spyMacd === undefined || spyMacd === null || spyMacd.insufficientHistory === true;
+    const spyHasSufficientHistory = isSpyRsiInsufficient === false && isSpyMacdInsufficient === false;
+
+    if (spyHasSufficientHistory === true) {
+      const spyRsiVal = spyRsi.currentRsi;
+      const spyHtVal = spyMacd.currentHistogram;
+      const spyPair = histogramPair(spyMacd, lookback);
+
+      const spyRsiDisplay = typeof spyRsiVal === "number" ? spyRsiVal.toFixed(2) : "--";
+      const spyHtDisplay = typeof spyHtVal === "number" ? (spyHtVal >= 0 ? "+" + spyHtVal.toFixed(4) : spyHtVal.toFixed(4)) : "--";
+      const spyPairSufficient = spyPair.insufficientHistory === false;
+      const spyHtLagDisplay = spyPairSufficient === true ? (spyPair.lagged >= 0 ? "+" + spyPair.lagged.toFixed(4) : spyPair.lagged.toFixed(4)) : "insufficient history";
+      const spyVolDisplay = typeof spyVol === "number" ? (spyVol * 100).toFixed(2) + "%" : "--";
+
+      const isSpyRsiActive = activeSignalDrilldown.ticker === "SPY" && activeSignalDrilldown.metric === "rsi";
+      const isSpyHtActive = activeSignalDrilldown.ticker === "SPY" && activeSignalDrilldown.metric === "hist_current";
+      const isSpyHtLagActive = activeSignalDrilldown.ticker === "SPY" && activeSignalDrilldown.metric === "hist_lagged";
+      const isSpyVolActive = activeSignalDrilldown.ticker === "SPY" && activeSignalDrilldown.metric === "volatility";
+
+      const spyHtClass = typeof spyHtVal === "number" && spyHtVal >= 0 ? "metric-positive" : "metric-negative";
+      const spyHtLagClass = spyPairSufficient === true && spyPair.lagged >= 0 ? "metric-positive" : "metric-negative";
+
+      html += `
+        <tr class="benchmark-row" id="signal-row-SPY" style="border-top: 2px solid var(--apple-border); background-color: #f8fafc;">
+          <td>
+            <div class="ticker-cell-group">
+              <span class="ticker-code">SPY</span>
+              <span class="ticker-name" style="color: var(--apple-blue); font-weight: 600;">Benchmark</span>
+            </div>
+          </td>
+          <td><span class="sector-text">S&P 500 Benchmark</span></td>
+          <td>
+            <button type="button" class="signal-metric-btn btn-drilldown ${isSpyRsiActive === true ? "active" : ""}" data-ticker="SPY" data-metric="rsi" title="Click to inspect raw unrounded SPY RSI recursion">
+              ${spyRsiDisplay}
+            </button>
+          </td>
+          <td>
+            <button type="button" class="signal-metric-btn btn-drilldown ${spyHtClass} ${isSpyHtActive === true ? "active" : ""}" data-ticker="SPY" data-metric="hist_current" title="Click to inspect raw unrounded SPY H_t inputs">
+              ${spyHtDisplay}
+            </button>
+          </td>
+          <td>
+            ${spyPairSufficient === true ? `
+              <button type="button" class="signal-metric-btn btn-drilldown ${spyHtLagClass} ${isSpyHtLagActive === true ? "active" : ""}" data-ticker="SPY" data-metric="hist_lagged" title="Click to inspect raw unrounded SPY H_(t-${lookback}) inputs">
+                ${spyHtLagDisplay}
+              </button>
+            ` : `<span class="badge-insufficient">insufficient history</span>`}
+          </td>
+          <td>
+            <button type="button" class="signal-metric-btn btn-drilldown ${isSpyVolActive === true ? "active" : ""}" data-ticker="SPY" data-metric="volatility" title="Click to inspect raw unrounded SPY volatility">
+              ${spyVolDisplay}
+            </button>
+          </td>
+        </tr>
+      `;
+
+      const isSpyDrilldownActive = activeSignalDrilldown.ticker === "SPY";
+      if (isSpyDrilldownActive === true) {
+        html += `
+          <tr class="signal-drilldown-row" id="drilldown-row-SPY">
+            <td colspan="6" class="drilldown-cell-wrapper">
+              ${renderSignalDrilldownHtml("SPY", activeSignalDrilldown.metric)}
+            </td>
+          </tr>
+        `;
+      }
+    }
+  }
+
+  tbody.innerHTML = html;
+
+  if (statsEl !== null) {
+    statsEl.textContent = `${validSignalsCount} active constituents • ${insufficientCount} excluded (insufficient history) • Lookback N = ${lookback}`;
   }
 }
 
@@ -4021,6 +4657,7 @@ export function renderMacdPanelUI(targetTicker) {
  */
 export function renderIndicatorsUI() {
   updateStage3SummaryMetrics();
+  renderSignalTable();
   renderVolatilitiesTable();
   renderCovarianceMatrixTable();
   renderRsiPanelUI();
@@ -4038,6 +4675,7 @@ export function setupStage3() {
 
   // Tabs setup
   const tabs = [
+    { btnId: "tab-signals", panelId: "panel-signals" },
     { btnId: "tab-volatilities", panelId: "panel-volatilities" },
     { btnId: "tab-covariance", panelId: "panel-covariance" },
     { btnId: "tab-rsi", panelId: "panel-rsi" },
@@ -4095,12 +4733,46 @@ export function setupStage3() {
     });
   }
 
-  // Delegated clicks for inspect buttons and quick ticker buttons
+  // Delegated clicks for signal table drill-downs, inspect buttons, and quick ticker buttons
   document.addEventListener("click", (evt) => {
     const target = evt.target;
     if (target === null || target === undefined) {
       return;
     }
+
+    // Drilldown button in signal table numeric cell
+    const drilldownBtn = target.closest(".btn-drilldown");
+    if (drilldownBtn !== null) {
+      const ticker = drilldownBtn.getAttribute("data-ticker");
+      const metric = drilldownBtn.getAttribute("data-metric");
+      const hasTicker = typeof ticker === "string" && ticker.length > 0;
+      const hasMetric = typeof metric === "string" && metric.length > 0;
+      if (hasTicker === true && hasMetric === true) {
+        setSignalDrilldown(ticker, metric);
+      }
+      return;
+    }
+
+    // Drilldown navigation pill within drilldown card
+    const navPill = target.closest(".drilldown-nav-pill");
+    if (navPill !== null) {
+      const ticker = navPill.getAttribute("data-ticker");
+      const metric = navPill.getAttribute("data-metric");
+      const hasTicker = typeof ticker === "string" && ticker.length > 0;
+      const hasMetric = typeof metric === "string" && metric.length > 0;
+      if (hasTicker === true && hasMetric === true) {
+        setSignalDrilldown(ticker, metric);
+      }
+      return;
+    }
+
+    // Drilldown close button
+    const closeBtn = target.closest(".btn-drilldown-close");
+    if (closeBtn !== null) {
+      closeSignalDrilldown();
+      return;
+    }
+
     const isInspectRsiBtn = target.matches(".btn-inspect-rsi");
     if (isInspectRsiBtn === true) {
       const ticker = target.getAttribute("data-ticker");
@@ -4535,6 +5207,11 @@ if (hasWindow === true) {
   window.computeMacd = computeMacd;
   window.histogramPair = histogramPair;
   window.renderMacdPanelUI = renderMacdPanelUI;
+  window.renderSignalTable = renderSignalTable;
+  window.renderSignalDrilldownHtml = renderSignalDrilldownHtml;
+  window.setSignalDrilldown = setSignalDrilldown;
+  window.closeSignalDrilldown = closeSignalDrilldown;
+  window.activeSignalDrilldown = activeSignalDrilldown;
 }
 
 function initializeApp() {
