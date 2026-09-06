@@ -4369,6 +4369,102 @@ tr.signal-drilldown-row td {
   line-height: 1.4;
 }
 
+/* Stage 8 Note Post-Check (Prompt 20) */
+.stage-8-postcheck-container {
+  margin-top: 14px;
+}
+
+.stage-8-postcheck-alert {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: #92400e;
+}
+
+.stage-8-postcheck-alert-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #b45309;
+  margin-bottom: 8px;
+}
+
+.stage-8-postcheck-alert-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  fill: currentColor;
+}
+
+.stage-8-postcheck-problem-list {
+  margin: 0;
+  padding-left: 18px;
+  list-style-type: disc;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stage-8-postcheck-problem-item {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #92400e;
+}
+
+.stage-8-postcheck-note-tip {
+  margin-top: 8px;
+  margin-bottom: 0;
+  font-size: 11.5px;
+  color: #b45309;
+  line-height: 1.4;
+}
+
+.stage-8-postcheck-passed-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #15803d;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.stage-8-postcheck-passed-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #16a34a;
+}
+
+.stage-8-postcheck-warning-banner {
+  display: inline-flex;
+  align-items: center;
+}
+
+.stage-8-postcheck-action-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  color: #92400e;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.stage-8-postcheck-action-pill .pill-icon {
+  font-size: 14px;
+}
+
+
 
 
 

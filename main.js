@@ -10231,7 +10231,23 @@ export function generateExportData(state = appState) {
       passed: state.guardrailResult && state.guardrailResult.passed === true,
       evaluatedAt: state.guardrailResult ? state.guardrailResult.evaluatedAt : new Date().toISOString()
     },
-    note: state.note && typeof state.note.text === "string" ? state.note.text : "Note unavailable"
+    note: (() => {
+      const hasNote = state.note && typeof state.note.text === "string" && state.note.text.trim().length > 0;
+      if (hasNote === true) {
+        if (!state.notePostCheck) {
+          const payload = state.notePayload || buildNotePayload(state);
+          state.notePostCheck = postCheckNote(state.note.text, payload);
+        }
+        return state.note.text;
+      }
+      return "Note unavailable";
+    })(),
+    notePostCheck: state.notePostCheck ? {
+      passed: state.notePostCheck.passed === true,
+      problems: Array.isArray(state.notePostCheck.problems) ? state.notePostCheck.problems : [],
+      failures: Array.isArray(state.notePostCheck.failures) ? state.notePostCheck.failures : [],
+      wordCount: typeof state.notePostCheck.wordCount === "number" ? state.notePostCheck.wordCount : 0
+    } : null
   };
 
   return exportObj;
@@ -10739,69 +10755,284 @@ export function buildNotePayload(state = appState) {
 }
 
 /**
- * Executes prompt 20 post-check validation on the received committee note.
- * Verifies word count, absence of lists/headings, and verbatim figure compliance.
+ * Normalizes a number token extracted from note text or payload.
+ * Strips leading currency symbols ($ € £ ¥), trailing percent signs (%),
+ * and thousands separators (,).
+ *
+ * @param {string} token
+ * @returns {string}
+ */
+export function normalizeNumberToken(token) {
+  const isString = typeof token === "string";
+  if (isString === false) {
+    return "";
+  }
+  return token
+    .replace(/^[\$€£¥]/, "")
+    .replace(/%$/, "")
+    .replace(/,/g, "")
+    .trim();
+}
+
+/**
+ * Builds the set of normalized payload numbers from every numeric field of the stored payload,
+ * including date components and the beta window (60).
+ *
+ * @param {object} payload
+ * @returns {Set<string>}
+ */
+export function buildPayloadNumberSet(payload) {
+  const payloadNumberSet = new Set();
+
+  const addToken = (raw) => {
+    if (raw === null || raw === undefined) {
+      return;
+    }
+    const isNum = typeof raw === "number";
+    if (isNum === true) {
+      payloadNumberSet.add(String(raw));
+      return;
+    }
+    const isStr = typeof raw === "string";
+    if (isStr === true) {
+      const tokens = raw.match(/(?:[\$€£¥])?\b\d[\d,]*(?:\.\d+)?%?/g);
+      const hasTokens = tokens !== null && Array.isArray(tokens) === true;
+      if (hasTokens === true) {
+        for (let i = 0; i < tokens.length; i += 1) {
+          const norm = normalizeNumberToken(tokens[i]);
+          const normNotEmpty = norm.length > 0;
+          if (normNotEmpty === true) {
+            payloadNumberSet.add(norm);
+          }
+        }
+      }
+    }
+  };
+
+  const traverse = (item) => {
+    if (item === null || item === undefined) {
+      return;
+    }
+    const isPrimitive = typeof item === "number" || typeof item === "string";
+    if (isPrimitive === true) {
+      addToken(item);
+      return;
+    }
+    const isArr = Array.isArray(item) === true;
+    if (isArr === true) {
+      for (let i = 0; i < item.length; i += 1) {
+        traverse(item[i]);
+      }
+      return;
+    }
+    const isObj = typeof item === "object";
+    if (isObj === true) {
+      const keys = Object.keys(item);
+      for (let i = 0; i < keys.length; i += 1) {
+        traverse(item[keys[i]]);
+      }
+    }
+  };
+
+  const hasPayload = payload !== null && typeof payload === "object";
+  if (hasPayload === true) {
+    traverse(payload);
+  }
+
+  // Explicit beta window (60)
+  payloadNumberSet.add("60");
+
+  // Explicit aligned date range components (year, month, and day parts treated as numbers as they appear)
+  const hasDateRange = hasPayload === true && payload.alignedDateRange !== null && typeof payload.alignedDateRange === "object";
+  if (hasDateRange === true) {
+    const dates = [payload.alignedDateRange.startDate, payload.alignedDateRange.endDate];
+    for (let d = 0; d < dates.length; d += 1) {
+      const dateStr = dates[d];
+      const isDateStr = typeof dateStr === "string";
+      if (isDateStr === true) {
+        const parts = dateStr.split(/[-/]/);
+        for (let p = 0; p < parts.length; p += 1) {
+          const part = parts[p].trim();
+          const isDigitsOnly = /^\d+$/.test(part) === true;
+          if (isDigitsOnly === true) {
+            payloadNumberSet.add(part);
+            const parsedInt = parseInt(part, 10);
+            const isValidInt = Number.isNaN(parsedInt) === false;
+            if (isValidInt === true) {
+              payloadNumberSet.add(String(parsedInt));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return payloadNumberSet;
+}
+
+/**
+ * Prompt 20: Note post-check in JavaScript.
+ * Verifies that the note quotes only the app's own numbers and follows the required shape.
+ * Warns if any problem is found. Never moves a number from the note into state and never blocks export.
  *
  * @param {string} noteText - Prose note text returned by the model
- * @param {object} [payload=appState.notePayload] - Stored note payload
- * @returns {{passed: boolean, failures: string[], wordCount: number, evaluatedAt: string}}
+ * @param {object} [payload=appState.notePayload] - Stored payload from buildNotePayload
+ * @returns {{passed: boolean, problems: Array<{type: string, detail: string}>, failures: string[], wordCount: number, evaluatedAt: string}}
  */
-export function runNotePostCheck(noteText, payload = appState.notePayload) {
-  const failures = [];
+export function postCheckNote(noteText, payload = appState.notePayload) {
+  const problems = [];
 
   const isString = typeof noteText === "string";
-  if (isString === false || noteText.trim().length === 0 || noteText === "Note unavailable") {
-    return {
+  const isEmptyOrUnavailable = isString === false || noteText.trim().length === 0 || noteText === "Note unavailable";
+  if (isEmptyOrUnavailable === true) {
+    const emptyResult = {
       passed: false,
+      problems: [
+        {
+          type: "empty-note",
+          detail: "Note is unavailable or empty."
+        }
+      ],
       failures: ["Note is unavailable or empty."],
       wordCount: 0,
       evaluatedAt: new Date().toISOString()
     };
+    if (typeof appState !== "undefined" && appState !== null) {
+      appState.notePostCheck = emptyResult;
+    }
+    return emptyResult;
   }
 
   const trimmed = noteText.trim();
   const words = trimmed.split(/\s+/).filter(Boolean);
   const wordCount = words.length;
 
-  // 1. Under 350 words constraint
-  const isUnder350 = wordCount <= 350;
-  if (isUnder350 === false) {
-    failures.push(`Note exceeds 350 words limit (${wordCount} words).`);
+  // 1. Verify word count is below 350; flag the count if not
+  const isBelow350 = wordCount < 350;
+  if (isBelow350 === false) {
+    problems.push({
+      type: "word-count",
+      detail: `Note exceeds word limit of 350 words (${wordCount} words detected).`
+    });
   }
 
-  // 2. Structural constraint: no bullet points, headings, or lists
-  const hasListsOrHeadings = /(?:^|\n)\s*(?:[*•\-]|\d+\.|\#{1,6})\s+/m.test(trimmed);
-  if (hasListsOrHeadings === true) {
-    failures.push("Note contains prohibited bullet points, numbered lists, or markdown headings.");
-  }
+  // 2. Verify absence of bullet characters and lines starting with a dash
+  // 3. Verify absence of heading-like lines: at most eight words with no terminal punctuation, or starting with #
+  const lines = trimmed.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+    const isLineEmpty = line.length === 0;
+    if (isLineEmpty === true) {
+      continue;
+    }
 
-  // 3. Verbatim figures constraint: all numbers in note must appear in payload or thesis
-  const payloadStr = payload ? JSON.stringify(payload) : "";
-  const thesisStr = THESIS_STATEMENT;
+    const startsWithBulletOrDash = /^\s*[-–—*•]/.test(rawLine) === true;
+    if (startsWithBulletOrDash === true) {
+      problems.push({
+        type: "prohibited-bullet-or-dash",
+        detail: `Line starting with bullet or dash detected: "${rawLine}"`
+      });
+    }
 
-  const numberTokens = trimmed.match(/\$?\b\d[\d,]*(?:\.\d+)?%?/g) || [];
-  for (let i = 0; i < numberTokens.length; i += 1) {
-    const token = numberTokens[i];
-    const cleanToken = token.replace(/[.,;:]$/, "");
-    const rawDigits = cleanToken.replace(/[$,%]/g, "");
+    const startsWithHash = /^\s*#/.test(rawLine) === true;
+    if (startsWithHash === true) {
+      problems.push({
+        type: "heading-hash",
+        detail: `Line starting with # detected: "${rawLine}"`
+      });
+    }
 
-    const inPayload = payloadStr.includes(cleanToken) === true || payloadStr.includes(rawDigits) === true;
-    const inThesis = thesisStr.includes(cleanToken) === true || thesisStr.includes(rawDigits) === true;
+    const lineWords = line.split(/\s+/).filter(Boolean);
+    const lineWordCount = lineWords.length;
+    const isAtMostEightWords = lineWordCount > 0 && lineWordCount <= 8;
+    const hasTerminalPunctuation = /[.!?]["']?$/.test(line) === true;
 
-    const isVerified = inPayload === true || inThesis === true;
-    if (isVerified === false) {
-      failures.push(`Figure "${cleanToken}" does not appear verbatim in input payload or thesis.`);
+    const isHeadingWithoutPunctuation = isAtMostEightWords === true && hasTerminalPunctuation === false && startsWithHash === false && startsWithBulletOrDash === false;
+    if (isHeadingWithoutPunctuation === true) {
+      problems.push({
+        type: "heading-no-terminal-punctuation",
+        detail: `Heading-like line with no terminal punctuation detected: "${line}"`
+      });
     }
   }
 
-  const passed = failures.length === 0;
-  return {
+  // 4. Flag written-out or rescaled forms: "million", "thousand", "billion", "k" after a number
+  const rescaledPattern = /\b\d[\d,]*(?:\.\d+)?\s*(?:million|thousand|billion|k)\b/gi;
+  let rescaledMatch = rescaledPattern.exec(trimmed);
+  while (rescaledMatch !== null) {
+    problems.push({
+      type: "rescaled-number",
+      detail: `Rescaled figure "${rescaledMatch[0].trim()}" detected. Figures must be written as exact unscaled digits.`
+    });
+    rescaledMatch = rescaledPattern.exec(trimmed);
+  }
+
+  // 5. Flag number words (one to ten, hundred) adjacent to a currency or percent context
+  const numberWords = "one|two|three|four|five|six|seven|eight|nine|ten|hundred";
+  const writtenAdjacentPatterns = [
+    new RegExp(`(?:[\\$€£¥]|USD|dollars?)\\s+(?:${numberWords})\\b`, "gi"),
+    new RegExp(`\\b(?:${numberWords})\\s+(?:%|percent|pct|dollars?|USD|million|thousand|billion)\\b`, "gi"),
+    new RegExp(`\\b(?:${numberWords})\\s*[\\$€£¥]`, "gi")
+  ];
+
+  for (let p = 0; p < writtenAdjacentPatterns.length; p += 1) {
+    const pat = writtenAdjacentPatterns[p];
+    let writtenMatch = pat.exec(trimmed);
+    while (writtenMatch !== null) {
+      problems.push({
+        type: "written-out-number",
+        detail: `Written-out number form "${writtenMatch[0].trim()}" detected. Figures must be written as digits.`
+      });
+      writtenMatch = pat.exec(trimmed);
+    }
+  }
+
+  // 6. Tokenize every number from note and verify against payloadNumberSet (whole token match)
+  const payloadNumberSet = buildPayloadNumberSet(payload);
+  const rawNumberTokens = trimmed.match(/(?:[\$€£¥])?\b\d[\d,]*(?:\.\d+)?%?/g) || [];
+  const flaggedUnverified = new Set();
+
+  for (let i = 0; i < rawNumberTokens.length; i += 1) {
+    const rawToken = rawNumberTokens[i];
+    const normalizedNumber = normalizeNumberToken(rawToken);
+    const hasNorm = normalizedNumber.length > 0;
+    if (hasNorm === false) {
+      continue;
+    }
+
+    const numberIsInPayload = payloadNumberSet.has(normalizedNumber);
+    if (numberIsInPayload === true) {
+      // accepted
+    } else {
+      const alreadyFlagged = flaggedUnverified.has(normalizedNumber);
+      if (alreadyFlagged === false) {
+        flaggedUnverified.add(normalizedNumber);
+        problems.push({
+          type: "unverified-number",
+          detail: `Figure "${rawToken}" (${normalizedNumber}) does not appear in payload.`
+        });
+      }
+    }
+  }
+
+  const passed = problems.length === 0;
+  const result = {
     passed: passed,
-    failures: failures,
+    problems: problems,
+    failures: problems.map((p) => p.detail),
     wordCount: wordCount,
     evaluatedAt: new Date().toISOString()
   };
+
+  if (typeof appState !== "undefined" && appState !== null) {
+    appState.notePostCheck = result;
+  }
+
+  return result;
 }
+
+export const runNotePostCheck = postCheckNote;
 
 /**
  * Generates executive committee note for Stage 8 using OpenRouter call 2.
@@ -11467,6 +11698,67 @@ export function renderStage8UI() {
     }
   }
 
+  // 6b. Post-check warning & results rendering (Prompt 20)
+  const postCheckContainer = document.getElementById("stage-8-postcheck-container");
+  const postCheckActionBanner = document.getElementById("stage-8-postcheck-warning-banner");
+
+  const hasValidNote = appState.note !== null && typeof appState.note.text === "string" && appState.note.text.trim().length > 0 && appState.note.text !== "Note unavailable";
+  const postCheck = appState.notePostCheck;
+
+  if (postCheckContainer !== null) {
+    if (hasValidNote === true && postCheck !== null) {
+      const hasProblems = postCheck.passed === false && Array.isArray(postCheck.problems) === true && postCheck.problems.length > 0;
+      if (hasProblems === true) {
+        postCheckContainer.innerHTML = `
+          <div class="stage-8-postcheck-alert" id="stage-8-postcheck-alert" role="alert">
+            <div class="stage-8-postcheck-alert-header">
+              <svg class="stage-8-postcheck-alert-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+              </svg>
+              <span>Note Post-Check Warning (${postCheck.problems.length} issue${postCheck.problems.length === 1 ? "" : "s"} flagged)</span>
+            </div>
+            <ul class="stage-8-postcheck-problem-list" id="stage-8-postcheck-problem-list">
+              ${postCheck.problems.map((p, idx) => `
+                <li class="stage-8-postcheck-problem-item" id="stage-8-postcheck-item-${idx}">
+                  <strong>[${escapeHtml(p.type)}]:</strong> ${escapeHtml(p.detail)}
+                </li>
+              `).join("")}
+            </ul>
+            <p class="stage-8-postcheck-note-tip">
+              The post-check warns you before presenting or exporting. It never edits the note and never blocks export.
+            </p>
+          </div>
+        `;
+      } else {
+        postCheckContainer.innerHTML = `
+          <div class="stage-8-postcheck-passed-box" id="stage-8-postcheck-passed">
+            <svg class="stage-8-postcheck-passed-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+            </svg>
+            <span>All figures verified against portfolio data verbatim (${postCheck.wordCount} words, plain continuous prose).</span>
+          </div>
+        `;
+      }
+    } else {
+      postCheckContainer.innerHTML = "";
+    }
+  }
+
+  if (postCheckActionBanner !== null) {
+    if (hasValidNote === true && postCheck !== null && postCheck.passed === false && Array.isArray(postCheck.problems) === true && postCheck.problems.length > 0) {
+      const summaryTooltip = postCheck.problems.map((p) => p.detail).join("; ");
+      const firstProblem = postCheck.problems[0].detail;
+      postCheckActionBanner.innerHTML = `
+        <div class="stage-8-postcheck-action-pill" id="stage-8-postcheck-action-pill" title="${escapeHtml(summaryTooltip)}">
+          <span class="pill-icon" aria-hidden="true">⚠️</span>
+          <span>Warning: ${escapeHtml(firstProblem)}${postCheck.problems.length > 1 ? ` (+${postCheck.problems.length - 1} more)` : ""}</span>
+        </div>
+      `;
+    } else {
+      postCheckActionBanner.innerHTML = "";
+    }
+  }
+
   // 7. Export button synchronization
   const btnExport = document.getElementById("btn-stage-8-export-portfolio");
   if (btnExport !== null) {
@@ -11684,6 +11976,9 @@ if (hasWindow === true) {
   window.NOTE_SYSTEM_PROMPT = NOTE_SYSTEM_PROMPT;
   window.buildNotePayload = buildNotePayload;
   window.runNotePostCheck = runNotePostCheck;
+  window.postCheckNote = postCheckNote;
+  window.buildPayloadNumberSet = buildPayloadNumberSet;
+  window.normalizeNumberToken = normalizeNumberToken;
   window.generateNote = generateNote;
   window.regenerateNote = regenerateNote;
   window.appState = appState;
@@ -11706,6 +12001,9 @@ if (typeof globalThis !== "undefined") {
   globalThis.NOTE_SYSTEM_PROMPT = NOTE_SYSTEM_PROMPT;
   globalThis.buildNotePayload = buildNotePayload;
   globalThis.runNotePostCheck = runNotePostCheck;
+  globalThis.postCheckNote = postCheckNote;
+  globalThis.buildPayloadNumberSet = buildPayloadNumberSet;
+  globalThis.normalizeNumberToken = normalizeNumberToken;
   globalThis.generateNote = generateNote;
   globalThis.regenerateNote = regenerateNote;
 }
