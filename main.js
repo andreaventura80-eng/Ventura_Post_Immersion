@@ -2035,18 +2035,49 @@ export function alignAndCompleteStage2() {
     }
   }
 
-  // Join SPY afterwards to the aligned constituent dates and keep only the dates SPY has
+  // Join SPY afterwards to the aligned constituent dates and keep only the dates SPY has (prompt 5)
   const spySeries = appState.priceCache["SPY"] || [];
-  const spyPriceMap = new Map(spySeries.map((b) => [b.datetime, b.close]));
-  const finalAlignedDates = commonDates.filter((d) => spyPriceMap.has(d) === true);
+  const hasSpyData = Array.isArray(spySeries) === true && spySeries.length > 0;
+  const spyPriceMap = new Map();
+  if (hasSpyData === true) {
+    for (let i = 0; i < spySeries.length; i += 1) {
+      const b = spySeries[i];
+      const isValidRow = b !== null && typeof b === "object" && typeof b.datetime === "string" && typeof b.close === "number";
+      if (isValidRow === true) {
+        spyPriceMap.set(b.datetime, b.close);
+      }
+    }
+  }
 
-  const hasSpyOverlap = finalAlignedDates.length > 0;
-  if (hasSpyOverlap === false) {
-    setStageStatus(2, "blocked");
-    showStage2Alert("SPY benchmark has no overlapping sessions with aligned constituents.", "error");
-    updateAlignmentSummaryCard();
-    renderRawPricesTable();
-    return;
+  // Constituents are aligned on their mutual session intersection
+  const finalAlignedDates = commonDates;
+
+  // Align SPY on constituent dates (or its own dates) if available; SPY failure never blocks stage 2
+  let alignedSpy = null;
+  const hasSpyPrices = hasSpyData === true && spyPriceMap.size > 0;
+  if (hasSpyPrices === true) {
+    const spyDates = [];
+    const spyPrices = [];
+    for (let i = 0; i < finalAlignedDates.length; i += 1) {
+      const d = finalAlignedDates[i];
+      const hasPrice = spyPriceMap.has(d);
+      if (hasPrice === true) {
+        spyDates.push(d);
+        spyPrices.push(spyPriceMap.get(d));
+      }
+    }
+    const hasOverlap = spyDates.length > 0;
+    if (hasOverlap === true) {
+      alignedSpy = {
+        dates: spyDates,
+        prices: spyPrices
+      };
+    } else {
+      alignedSpy = {
+        dates: Array.from(spyPriceMap.keys()),
+        prices: Array.from(spyPriceMap.values())
+      };
+    }
   }
 
   // Build alignedData
@@ -2056,11 +2087,6 @@ export function alignAndCompleteStage2() {
     const pMap = priceMapByTicker[t];
     alignedPrices[t] = finalAlignedDates.map((d) => pMap.get(d));
   }
-
-  const alignedSpy = {
-    dates: [...finalAlignedDates],
-    prices: finalAlignedDates.map((d) => spyPriceMap.get(d))
-  };
 
   appState.alignedData = {
     dates: finalAlignedDates,
@@ -2095,15 +2121,27 @@ export function alignAndCompleteStage2() {
     );
   }
 
-  // Update SPY status
-  setTickerPriceStatus(
-    "SPY",
-    "done",
-    "",
-    finalAlignedDates.length,
-    `${finalAlignedDates[0]} → ${finalAlignedDates[finalAlignedDates.length - 1]}`,
-    "Benchmark (joined to aligned dates)"
-  );
+  // Update SPY status (diagnostic only, absent SPY never blocks stages)
+  const hasAlignedSpy = alignedSpy !== null && Array.isArray(alignedSpy.dates) === true && alignedSpy.dates.length > 0;
+  if (hasAlignedSpy === true) {
+    setTickerPriceStatus(
+      "SPY",
+      "done",
+      "",
+      alignedSpy.dates.length,
+      `${alignedSpy.dates[0]} → ${alignedSpy.dates[alignedSpy.dates.length - 1]}`,
+      "Benchmark (joined to aligned dates)"
+    );
+  } else {
+    setTickerPriceStatus(
+      "SPY",
+      "error",
+      "SPY unavailable",
+      0,
+      "-",
+      "Benchmark unavailable (diagnostic only)"
+    );
+  }
 
   updateAlignmentSummaryCard();
   renderRawPricesTable();
@@ -8730,8 +8768,295 @@ export function runStage6Optimization() {
     appState.metrics.consistencyError = consistencyResult.error;
   }
 
+  // 8. Rolling 60-day beta of the minimum variance portfolio against SPY (prompt 15)
+  recomputeRollingBeta();
+
   setStageStatus(6, "done");
   renderStage6UI();
+}
+
+/**
+ * Normalizes a date value (Date object, string, or number) into a standard key string.
+ *
+ * @param {string|number|Date} val - Raw date input
+ * @returns {string|null} - Normalized date string or null if invalid
+ */
+function normalizeRollingBetaDateKey(val) {
+  const isDateObj = val instanceof Date;
+  if (isDateObj === true) {
+    return val.toISOString().slice(0, 10);
+  }
+  const isString = typeof val === "string";
+  const isNumber = typeof val === "number";
+  const isValidPrimitive = isString === true || isNumber === true;
+  if (isValidPrimitive === true) {
+    return String(val);
+  }
+  return null;
+}
+
+/**
+ * Computes rolling window beta of portfolio return series against SPY.
+ * Uses sample covariance and sample variance formulas over each rolling window.
+ *
+ * @param {number[]} portfolioSeries - Array of portfolio simple daily returns
+ * @param {string[]} portfolioDates - Array of portfolio return dates (YYYY-MM-DD)
+ * @param {number[]} spySeries - Array of SPY simple daily returns
+ * @param {string[]} spyDates - Array of SPY return dates (YYYY-MM-DD)
+ * @param {number} [window=60] - Rolling window size in sessions (defaults to 60)
+ * @returns {{ available: boolean, reason?: string, window?: number, series?: Array<{ date: string, beta: number }>, current?: number }}
+ */
+export function computeRollingBeta(portfolioSeries, portfolioDates, spySeries, spyDates, window = 60) {
+  const isWindowNum = typeof window === "number" && isNaN(window) === false && window > 0;
+  let win = 60;
+  if (isWindowNum === true) {
+    win = Math.floor(window);
+  }
+
+  // 1. Check if SPY data is present
+  const hasSpySeries = Array.isArray(spySeries) === true && spySeries.length > 0;
+  const hasSpyDates = Array.isArray(spyDates) === true && spyDates.length > 0;
+  const isSpyAvailable = hasSpySeries === true && hasSpyDates === true;
+  if (isSpyAvailable === false) {
+    const res = { available: false, reason: "SPY unavailable" };
+    const hasAppState = appState !== null && typeof appState === "object";
+    if (hasAppState === true) {
+      appState.beta = res;
+    }
+    const hasWindow = typeof window !== "undefined" && window.state !== null && typeof window.state === "object";
+    if (hasWindow === true) {
+      window.state.beta = res;
+    }
+    return res;
+  }
+
+  // Build SPY return lookup by date
+  const spyMap = new Map();
+  const spyLen = Math.min(spySeries.length, spyDates.length);
+  for (let i = 0; i < spyLen; i += 1) {
+    const rawDate = spyDates[i];
+    const r = spySeries[i];
+    const d = normalizeRollingBetaDateKey(rawDate);
+    const isDateValid = d !== null && d.length > 0;
+    const isReturnValid = typeof r === "number" && isNaN(r) === false;
+    const isEntryValid = isDateValid === true && isReturnValid === true;
+    if (isEntryValid === true) {
+      spyMap.set(d, r);
+    }
+  }
+
+  const hasUsableSpyEntries = spyMap.size > 0;
+  if (hasUsableSpyEntries === false) {
+    const res = { available: false, reason: "SPY unavailable" };
+    const hasAppState = appState !== null && typeof appState === "object";
+    if (hasAppState === true) {
+      appState.beta = res;
+    }
+    const hasWindow = typeof window !== "undefined" && window.state !== null && typeof window.state === "object";
+    if (hasWindow === true) {
+      window.state.beta = res;
+    }
+    return res;
+  }
+
+  // Check if portfolio series is present
+  const hasPortSeries = Array.isArray(portfolioSeries) === true && portfolioSeries.length > 0;
+  const hasPortDates = Array.isArray(portfolioDates) === true && portfolioDates.length > 0;
+  const isPortAvailable = hasPortSeries === true && hasPortDates === true;
+  if (isPortAvailable === false) {
+    const reasonMsg = win === 60 ? "fewer than 60 usable sessions" : `fewer than ${win} usable sessions`;
+    const res = { available: false, reason: reasonMsg };
+    const hasAppState = appState !== null && typeof appState === "object";
+    if (hasAppState === true) {
+      appState.beta = res;
+    }
+    const hasWindow = typeof window !== "undefined" && window.state !== null && typeof window.state === "object";
+    if (hasWindow === true) {
+      window.state.beta = res;
+    }
+    return res;
+  }
+
+  // Join the two series on dates: keep only the dates for which SPY has a return
+  const joinedDates = [];
+  const joinedPort = [];
+  const joinedSpy = [];
+  const portLen = Math.min(portfolioSeries.length, portfolioDates.length);
+
+  for (let i = 0; i < portLen; i += 1) {
+    const rawDate = portfolioDates[i];
+    const d = normalizeRollingBetaDateKey(rawDate);
+    const p = portfolioSeries[i];
+    const isDateValid = d !== null && d.length > 0;
+    const hasSpyForDate = isDateValid === true && spyMap.has(d);
+    const isPortNum = typeof p === "number" && isNaN(p) === false;
+    const isUsableSession = hasSpyForDate === true && isPortNum === true;
+    if (isUsableSession === true) {
+      joinedDates.push(d);
+      joinedPort.push(p);
+      joinedSpy.push(spyMap.get(d));
+    }
+  }
+
+  // 2. Check if fewer than window joined sessions exist
+  const joinedCount = joinedDates.length;
+  const hasEnoughSessions = joinedCount >= win;
+  if (hasEnoughSessions === false) {
+    const reasonMsg = win === 60 ? "fewer than 60 usable sessions" : `fewer than ${win} usable sessions`;
+    const res = { available: false, reason: reasonMsg };
+    const hasAppState = appState !== null && typeof appState === "object";
+    if (hasAppState === true) {
+      appState.beta = res;
+    }
+    const hasWindow = typeof window !== "undefined" && window.state !== null && typeof window.state === "object";
+    if (hasWindow === true) {
+      window.state.beta = res;
+    }
+    return res;
+  }
+
+  // 3. For every window of consecutive joined sessions, compute beta = cov(portfolio, SPY) / var(SPY)
+  // using sample formulas (divide by n minus 1 in both; the ratio is unaffected).
+  const numWindows = joinedCount - win + 1;
+  const series = [];
+  const df = win - 1;
+
+  for (let i = 0; i < numWindows; i += 1) {
+    let sumPort = 0;
+    let sumSpy = 0;
+    for (let j = 0; j < win; j += 1) {
+      sumPort += joinedPort[i + j];
+      sumSpy += joinedSpy[i + j];
+    }
+    const meanPort = sumPort / win;
+    const meanSpy = sumSpy / win;
+
+    let sumCross = 0;
+    let sumSqSpy = 0;
+    for (let j = 0; j < win; j += 1) {
+      const pDiff = joinedPort[i + j] - meanPort;
+      const sDiff = joinedSpy[i + j] - meanSpy;
+      sumCross += pDiff * sDiff;
+      sumSqSpy += sDiff * sDiff;
+    }
+
+    const sampleCov = sumCross / df;
+    const sampleVarSpy = sumSqSpy / df;
+    const hasVariance = sampleVarSpy > 1e-14;
+    let beta = 0;
+    if (hasVariance === true) {
+      beta = sampleCov / sampleVarSpy;
+    } else {
+      beta = 0;
+    }
+
+    const endDate = joinedDates[i + win - 1];
+    series.push({
+      date: endDate,
+      beta: beta
+    });
+  }
+
+  // 4. Current beta is the value of the last window
+  const current = series[series.length - 1].beta;
+
+  // 5. Result
+  const result = {
+    available: true,
+    window: win,
+    series: series,
+    current: current
+  };
+
+  const hasAppState = appState !== null && typeof appState === "object";
+  if (hasAppState === true) {
+    appState.beta = result;
+  }
+  const hasWindow = typeof window !== "undefined" && window.state !== null && typeof window.state === "object";
+  if (hasWindow === true) {
+    window.state.beta = result;
+  }
+
+  return result;
+}
+
+/**
+ * Recomputes the rolling 60-day beta of the minimum variance portfolio against SPY
+ * using current appState and stores the result in appState.beta.
+ *
+ * @returns {{ available: boolean, reason?: string, window?: number, series?: Array<{ date: string, beta: number }>, current?: number }}
+ */
+export function recomputeRollingBeta() {
+  const hasMV = appState.metrics !== null &&
+    typeof appState.metrics === "object" &&
+    appState.metrics.minVariance !== null &&
+    typeof appState.metrics.minVariance === "object" &&
+    Array.isArray(appState.metrics.minVariance.dailySeries) === true;
+
+  const hasDates = appState.indicatorSeries !== null &&
+    typeof appState.indicatorSeries === "object" &&
+    Array.isArray(appState.indicatorSeries.dates) === true;
+
+  if (hasMV === false || hasDates === false) {
+    const unavailableRes = { available: false, reason: "fewer than 60 usable sessions" };
+    appState.beta = unavailableRes;
+    const hasWindow = typeof window !== "undefined" && window.state !== null && typeof window.state === "object";
+    if (hasWindow === true) {
+      window.state.beta = unavailableRes;
+    }
+    return unavailableRes;
+  }
+
+  const pSeries = appState.metrics.minVariance.dailySeries;
+  const pDates = appState.indicatorSeries.dates;
+
+  let sSeries = null;
+  let sDates = null;
+
+  const hasSpyData = appState.indicatorSeries !== null &&
+    typeof appState.indicatorSeries === "object" &&
+    appState.indicatorSeries.spy !== null &&
+    typeof appState.indicatorSeries.spy === "object" &&
+    Array.isArray(appState.indicatorSeries.spy.returns) === true &&
+    Array.isArray(appState.indicatorSeries.spy.dates) === true;
+
+  if (hasSpyData === true) {
+    sSeries = appState.indicatorSeries.spy.returns;
+    sDates = appState.indicatorSeries.spy.dates;
+  } else {
+    // Fallback check in priceCache for SPY
+    const hasPriceCacheSpy = appState.priceCache !== null &&
+      typeof appState.priceCache === "object" &&
+      Array.isArray(appState.priceCache["SPY"]) === true &&
+      appState.priceCache["SPY"].length > 1;
+
+    if (hasPriceCacheSpy === true) {
+      const rawSpy = appState.priceCache["SPY"];
+      const rawPrices = [];
+      const rawDates = [];
+      for (let i = 0; i < rawSpy.length; i += 1) {
+        const item = rawSpy[i];
+        const isValidItem = item !== null && typeof item === "object" && typeof item.datetime === "string" && typeof item.close === "number";
+        if (isValidItem === true) {
+          rawDates.push(item.datetime);
+          rawPrices.push(item.close);
+        }
+      }
+      const hasEnoughPrices = rawPrices.length > 1;
+      if (hasEnoughPrices === true) {
+        sSeries = computeDailyReturns(rawPrices);
+        sDates = rawDates.slice(1);
+      }
+    }
+  }
+
+  const betaRes = computeRollingBeta(pSeries, pDates, sSeries, sDates, 60);
+  appState.beta = betaRes;
+  const hasWindow = typeof window !== "undefined" && window.state !== null && typeof window.state === "object";
+  if (hasWindow === true) {
+    window.state.beta = betaRes;
+  }
+  return betaRes;
 }
 
 /**
@@ -8820,6 +9145,26 @@ export function renderStage6UI() {
   const volIV = typeof iv.annualizedVolatility === "number" ? (iv.annualizedVolatility * 100).toFixed(2) + "%" : "0.00%";
   const retIV = typeof iv.annualizedReturn === "number" ? (iv.annualizedReturn * 100).toFixed(2) + "%" : "0.00%";
   const sharpeIV = typeof iv.sharpe === "number" ? iv.sharpe.toFixed(2) : "0.00";
+
+  // Rolling 60-day beta formatting (prompt 15)
+  let betaValueDisplay = "Unavailable";
+  let betaSubtextDisplay = "SPY unavailable";
+  const hasBetaState = appState.beta !== null && typeof appState.beta === "object";
+  if (hasBetaState === true) {
+    const isBetaAvailable = appState.beta.available === true;
+    if (isBetaAvailable === true) {
+      const curBeta = typeof appState.beta.current === "number" ? appState.beta.current : null;
+      if (curBeta !== null) {
+        betaValueDisplay = curBeta.toFixed(2);
+        const winNum = appState.beta.window || 60;
+        const totalPoints = Array.isArray(appState.beta.series) === true ? appState.beta.series.length : 0;
+        betaSubtextDisplay = `Current ${winNum}-session window (${totalPoints} rolling points)`;
+      }
+    } else {
+      betaValueDisplay = "Unavailable";
+      betaSubtextDisplay = appState.beta.reason || "SPY unavailable";
+    }
+  }
 
   // Consistency error banner
   let consistencyHtml = "";
@@ -8995,6 +9340,17 @@ export function renderStage6UI() {
             ${mv.iterations || 0} iterations
           </div>
           <div class="stage-6-metric-subtext">Obj: ${(mv.objective || 0).toExponential(3)}</div>
+        </div>
+
+        <div class="stage-6-metric-card" id="stage-6-card-beta">
+          <div class="stage-6-metric-header">
+            <span class="stage-6-metric-label">Rolling 60d Beta</span>
+            <span class="stage-6-metric-badge">vs SPY</span>
+          </div>
+          <div class="stage-6-metric-value" style="font-size: 20px; padding-top: 3px;">
+            ${betaValueDisplay}
+          </div>
+          <div class="stage-6-metric-subtext">${betaSubtextDisplay}</div>
         </div>
       </div>
 
@@ -9303,8 +9659,20 @@ if (hasWindow === true) {
   window.runStage6Optimization = runStage6Optimization;
   window.renderStage6UI = renderStage6UI;
   window.setupStage6 = setupStage6;
+  window.computeRollingBeta = computeRollingBeta;
+  window.recomputeRollingBeta = recomputeRollingBeta;
+  window.appState = appState;
   window.state = appState;
 }
+
+if (typeof globalThis !== "undefined") {
+  globalThis.appState = appState;
+  globalThis.state = appState;
+  globalThis.computeRollingBeta = computeRollingBeta;
+  globalThis.recomputeRollingBeta = recomputeRollingBeta;
+}
+
+export { appState as state };
 
 function initializeApp() {
   renderStageTracker();
