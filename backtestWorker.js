@@ -7,15 +7,17 @@ import { runBacktest } from "./backtestEngine.js";
 
 self.onmessage = function (event) {
   const data = event.data;
-  if (!data || !data.input) {
-    self.postMessage({ type: "error", error: "Missing backtest input payload." });
+  const input = (data && (data.input || data.data)) || data;
+  if (!input || typeof input !== "object" || !input.priceCache) {
+    self.postMessage({ type: "ERROR", error: "Missing backtest priceCache input payload." });
     return;
   }
 
   try {
-    const result = runBacktest(data.input, (progress) => {
+    const result = runBacktest(input, (progress) => {
       self.postMessage({
-        type: "progress",
+        type: "PROGRESS",
+        data: progress,
         percent: progress.percent,
         current: progress.current,
         total: progress.total
@@ -23,12 +25,13 @@ self.onmessage = function (event) {
     });
 
     self.postMessage({
-      type: "done",
+      type: "DONE",
+      data: result,
       result: result
     });
   } catch (err) {
     self.postMessage({
-      type: "error",
+      type: "ERROR",
       error: err && err.message ? err.message : String(err)
     });
   }

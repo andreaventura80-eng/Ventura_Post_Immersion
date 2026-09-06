@@ -1,4 +1,4 @@
-// Portfolio Pipeline: Shared Store, Stage Tracker, and Collapsible Sections
+// Oversold Turn: Shared Store, Stage Tracker, and Collapsible Sections
 
 export const ALLOWED_STATUSES = ["idle", "running", "done", "stale", "blocked"];
 
@@ -123,7 +123,14 @@ export const appState = {
   beta: null,
   guardrailResult: null,
   note: null,
+  noteError: null,
+  notePayload: null,
   notePostCheck: null,
+  noteStale: false,
+  noteStaleReason: null,
+  noteAutoCalledThisRun: false,
+  noteRequestInFlight: false,
+  stageEightRendered: false,
   reviewed: false,
   backtest: null,
   stageStatus: {
@@ -181,6 +188,13 @@ export function setStageStatus(stage, status) {
   if (statusIsAllowed === true) {
     appState.stageStatus[stageNum] = effectiveStatus;
     updateStageUI(stageNum);
+    if (typeof renderStage9UI === "function") {
+      try {
+        renderStage9UI();
+      } catch (uiErr) {
+        // Safe swallow during initialization
+      }
+    }
     return true;
   } else {
     const errorMsg = `Status "${effectiveStatus}" is rejected. Allowed statuses are: ${ALLOWED_STATUSES.join(", ")}.`;
@@ -363,6 +377,9 @@ export function toggleStageSection(stageId) {
   } else {
     header.setAttribute("aria-expanded", "true");
     body.classList.remove("collapsed");
+    if (Number(stageId) === 9 && typeof renderStage9UI === "function") {
+      renderStage9UI();
+    }
   }
 }
 
@@ -747,6 +764,7 @@ export function applyUniverseCSV(csvText) {
     }
 
     clearReview();
+    markNoteStale("Universe changed");
     renderUniverseUI();
     updatePreflightCard();
     renderRawPricesTable();
@@ -838,6 +856,7 @@ export function resetToDefaultUniverse() {
   }
 
   clearReview();
+  markNoteStale("Universe reset to default");
   renderUniverseUI();
   updatePreflightCard();
   renderRawPricesTable();
@@ -864,6 +883,7 @@ export function toggleConstituentTicker(ticker) {
   }
 
   clearReview();
+  markNoteStale("Constituent selection changed");
 
   const isNowSelected = appState.selectedTickers.includes(ticker);
   const isCached = appState.priceCache && Array.isArray(appState.priceCache[ticker]) && appState.priceCache[ticker].length > 0;
@@ -1025,6 +1045,7 @@ export function validateAndSetWeightCap(rawInput) {
   renderSettingsUI();
   updatePreflightCard();
   clearReview();
+  markNoteStale("Weight cap changed");
 
   if (appState.stageStatus[9] === "done") {
     setStageStatus(9, "stale");
@@ -1080,6 +1101,7 @@ export function validateAndSetMinimumBreadth(rawInput) {
   renderSettingsUI();
   updatePreflightCard();
   clearReview();
+  markNoteStale("Minimum breadth changed");
 
   if (appState.stageStatus[9] === "done") {
     setStageStatus(9, "stale");
@@ -1125,18 +1147,13 @@ export function validateAndSetInvestmentAmount(rawInput) {
   renderSettingsUI();
   updatePreflightCard();
   clearReview();
+  markNoteStale("Investment amount changed");
 
   const hasWeights = appState.weights !== null && typeof appState.weights === "object" && Array.isArray(appState.weights.minVariance) === true;
   if (hasWeights === true) {
     updateStage6InvestmentAmount(num);
   }
   evaluateGuardrails();
-  if (appState.note !== null && typeof appState.note === "object") {
-    if (appState.note.investmentAmount !== num) {
-      appState.note.isStale = true;
-      setStageStatus(8, "stale");
-    }
-  }
   renderStage7UI();
   renderStage8UI();
 
@@ -1186,6 +1203,7 @@ export function validateAndSetRsiThreshold(rawInput) {
   renderSettingsUI();
   updatePreflightCard();
   clearReview();
+  markNoteStale("RSI threshold changed");
 
   if (appState.stageStatus[9] === "done") {
     setStageStatus(9, "stale");
@@ -1231,6 +1249,7 @@ export function validateAndSetHistogramLookback(rawInput) {
   renderSignalTable();
   renderMacdPanelUI();
   clearReview();
+  markNoteStale("Histogram lookback changed");
 
   if (appState.stageStatus[9] === "done") {
     setStageStatus(9, "stale");
@@ -1371,6 +1390,7 @@ export function validateAndSetRiskFreeRate(rawInput) {
   renderSettingsUI();
   updatePreflightCard();
   clearReview();
+  markNoteStale("Risk-free rate changed");
 
   const hasMetrics = appState.metrics !== null && typeof appState.metrics === "object" && appState.metrics.minVariance !== undefined;
   if (hasMetrics === true) {
@@ -1420,6 +1440,7 @@ export function validateAndSetGateMode(val) {
     appState.settings.gateMode = val;
     clearSettingsError();
     clearReview();
+    markNoteStale("Gate mode changed");
     const hasLabels = appState.labels !== null && typeof appState.labels === "object";
     if (hasLabels === true) {
       applyTextGate();
@@ -2375,6 +2396,9 @@ export function alignAndCompleteStage2() {
   // Set stage 2 to done and stage 3 to done
   setStageStatus(2, "done");
   setStageStatus(3, "done");
+  if (typeof renderStage9UI === "function") {
+    renderStage9UI();
+  }
 
   // Run Stage 4 technical screen
   runStage4Screen();
@@ -2430,6 +2454,7 @@ export async function runPriceFetchAndAlignment(isRefresh = false) {
     appState.alignedData = null;
     appState.priceStatus = {};
     appState.indicatorSeries = null;
+    markNoteStale("Price history refreshed");
   }
 
   showStage2Alert("");
@@ -2590,6 +2615,10 @@ export function handleRunPipeline() {
   const reasons = computePreflightChecks();
   const canRun = reasons.length === 0;
   if (canRun === true) {
+    appState.noteAutoCalledThisRun = false;
+    appState.stageEightRendered = false;
+    appState.noteRequestInFlight = false;
+
     setStageStatus(1, "done");
     setStageStatus(2, "running");
 
@@ -5277,6 +5306,7 @@ export function relaxRsiThreshold() {
   renderSettingsUI();
   updatePreflightCard();
   clearReview();
+  markNoteStale("RSI threshold relaxed");
 
   const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
   if (hasIndicators === true) {
@@ -6672,6 +6702,7 @@ export async function regenerateLabels() {
 
   const success = await callOpenRouterClassifier(survivors);
   applyTextGate();
+  markNoteStale("Text labels regenerated");
   evaluateGuardrails();
   renderStage5UI();
   renderStage6UI();
@@ -6733,6 +6764,7 @@ export async function labelNewSurvivors() {
   await callOpenRouterClassifier(unlabelled);
 
   applyTextGate();
+  markNoteStale("New survivors labelled");
   evaluateGuardrails();
   renderStage5UI();
   renderStage6UI();
@@ -10678,16 +10710,7 @@ export function setupStage7() {
         }
       }
 
-      const guardrailsPass = appState.guardrailResult !== null && appState.guardrailResult.passed === true;
-      const exportIsAllowed = guardrailsPass === true && appState.reviewed === true;
-      const exportBtn = document.getElementById("btn-export-portfolio");
-      if (exportBtn !== null) {
-        exportBtn.disabled = exportIsAllowed === false;
-      }
-      const stage8ExportBtn = document.getElementById("btn-stage-8-export-portfolio");
-      if (stage8ExportBtn !== null) {
-        stage8ExportBtn.disabled = exportIsAllowed === false;
-      }
+      syncAllExportButtons();
     };
   }
 
@@ -10730,7 +10753,7 @@ Part 4: The two largest risks.
 When backtest figures are present in the payload, state whether the walk-forward evidence supports the thesis (naming the screen effect and optimizer effect from the payload) and include the two limitations; when backtest figures are absent, state that the backtest was omitted.
 
 Constraints:
-- Under 400 words total.
+- Under 350 words total.
 - No bullet points, headings, or lists. Write continuous prose paragraphs.`;
 
 /**
@@ -10746,46 +10769,179 @@ export function buildNotePayload(state = appState) {
   const rf = typeof state.settings.riskFreeRate === "number" ? state.settings.riskFreeRate : 0.0391;
   const gateMode = state.settings.gateMode || "exclude";
 
-  const settingsUsed = {
-    rsiThreshold: String(state.settings.baseRsiThreshold || state.settings.rsiThreshold || 40),
-    rsiCurrent: String(state.settings.rsiThreshold || 40),
-    rsiRelaxed: (state.settings.rsiRelaxCount || 0) > 0 ? "Yes" : "No",
-    rsiRelaxCount: String(state.settings.rsiRelaxCount || 0),
-    rsiRelaxationSummary: (state.settings.rsiRelaxCount || 0) > 0
-      ? `relaxed ${state.settings.rsiRelaxCount} time(s)`
-      : "not relaxed",
-    lookback: `${state.settings.histogramLookback || 3} sessions`,
-    histogramLookback: `${state.settings.histogramLookback || 3} sessions`,
-    cap: formatPercentage(cap),
-    weightCap: formatPercentage(cap),
-    sectorLimit: "50.00%",
-    gateMode: gateMode,
-    riskFreeRate: formatPercentage(rf)
+  // Universe field
+  const selectedTickers = Array.isArray(state.selectedTickers) ? state.selectedTickers : [];
+  const universeRows = Array.isArray(state.universe) ? state.universe : [];
+  const constituentRows = universeRows.filter((r) => r.sector !== "Benchmark" && r.ticker !== "SPY");
+  const constituentCount = String(constituentRows.length || 33);
+  const selectedCount = String(selectedTickers.length);
+
+  const universe = {
+    indexName: "S&P 500",
+    constituentCount: constituentCount,
+    selectedCount: selectedCount,
+    benchmarkTicker: "SPY"
   };
 
+  // Settings used
+  const settingsUsed = {
+    rsiThresholdAsSet: String(state.settings.baseRsiThreshold || state.settings.rsiThreshold || 40),
+    rsiRelaxed: (state.settings.rsiRelaxCount || 0) > 0 ? "yes" : "no",
+    rsiRelaxationCount: String(state.settings.rsiRelaxCount || 0),
+    rsiEffectiveThreshold: String(state.settings.rsiThreshold || 40),
+    rsiPeriod: "14",
+    macdFast: "12",
+    macdSlow: "26",
+    macdSignal: "9",
+    lookbackN: String(state.settings.histogramLookback || 3),
+    cap: formatPercentage(cap),
+    sectorLimit: "50%",
+    minimumBreadth: String(state.settings.minimumBreadth || 5),
+    gateMode: gateMode,
+    riskFreeRate: formatPercentage(rf),
+    riskFreeRateDate: state.settings.riskFreeRateDate || "current",
+    investmentAmount: formatWholeDollars(inv),
+    // Aliases
+    rsiThreshold: String(state.settings.baseRsiThreshold || state.settings.rsiThreshold || 40),
+    rsiCurrent: String(state.settings.rsiThreshold || 40),
+    weightCap: formatPercentage(cap),
+    histogramLookback: `${state.settings.histogramLookback || 3} sessions`
+  };
+
+  // Data window
   const hasAligned = state.alignedData !== null && typeof state.alignedData === "object";
   const sessionCount = hasAligned === true && typeof state.alignedData.sessionCount === "number"
     ? state.alignedData.sessionCount
     : (hasAligned === true && Array.isArray(state.alignedData.dates) ? state.alignedData.dates.length : 250);
 
+  const shortestHistoryTicker = (hasAligned === true && state.alignedData.shortestTicker)
+    ? state.alignedData.shortestTicker
+    : "None";
+
+  const dataWindow = {
+    alignedStart: hasAligned === true && state.alignedData.startDate ? state.alignedData.startDate : "",
+    alignedEnd: hasAligned === true && state.alignedData.endDate ? state.alignedData.endDate : "",
+    alignedSessionCount: String(sessionCount),
+    shortestHistoryTicker: shortestHistoryTicker
+  };
+
   const alignedHistory = {
-    startDate: hasAligned === true && state.alignedData.startDate ? state.alignedData.startDate : "",
-    endDate: hasAligned === true && state.alignedData.endDate ? state.alignedData.endDate : "",
+    startDate: dataWindow.alignedStart,
+    endDate: dataWindow.alignedEnd,
     sessionCount: `${sessionCount} sessions`,
-    dateRange: (hasAligned === true && state.alignedData.startDate && state.alignedData.endDate)
-      ? `${state.alignedData.startDate} to ${state.alignedData.endDate}`
+    dateRange: (dataWindow.alignedStart && dataWindow.alignedEnd)
+      ? `${dataWindow.alignedStart} to ${dataWindow.alignedEnd}`
       : ""
   };
 
-  const signals = [];
+  // Counts
+  const screenSurvivors = state.screenResult && Array.isArray(state.screenResult.survivors)
+    ? state.screenResult.survivors
+    : [];
+  const gatedSurvivors = Array.isArray(state.gatedSurvivors)
+    ? state.gatedSurvivors
+    : [];
+
+  let headwindCount = 0;
+  let neutralCount = 0;
+  let tailwindCount = 0;
+  let unclassifiedCount = 0;
+
+  for (let i = 0; i < screenSurvivors.length; i += 1) {
+    const sym = screenSurvivors[i];
+    const lbl = state.labels && state.labels[sym] ? state.labels[sym].label : "Unclassified";
+    if (lbl === "Headwind") {
+      headwindCount += 1;
+    } else if (lbl === "Neutral") {
+      neutralCount += 1;
+    } else if (lbl === "Tailwind") {
+      tailwindCount += 1;
+    } else {
+      unclassifiedCount += 1;
+    }
+  }
+
+  const droppedCount = Math.max(0, screenSurvivors.length - gatedSurvivors.length);
+  const keptWithWarnCount = gateMode === "warn" ? headwindCount : 0;
+
+  const counts = {
+    technicalSurvivors: screenSurvivors.length,
+    headwind: headwindCount,
+    neutral: neutralCount,
+    tailwind: tailwindCount,
+    unclassified: unclassifiedCount,
+    droppedByGate: gateMode === "exclude" ? droppedCount : 0,
+    keptWithWarning: gateMode === "warn" ? keptWithWarnCount : 0,
+    gatedSurvivors: gatedSurvivors.length
+  };
+
+  // Tickers list
   const byTicker = state.screenResult && state.screenResult.byTicker ? state.screenResult.byTicker : {};
-  const screenTickers = Object.keys(byTicker);
-  for (let i = 0; i < screenTickers.length; i += 1) {
-    const sym = screenTickers[i];
-    const r = byTicker[sym];
+  const tickersList = [];
+  const signals = [];
+  const textLabels = [];
+  const headwindNames = [];
+
+  for (let i = 0; i < constituentRows.length; i += 1) {
+    const sym = constituentRows[i].ticker;
+    const sec = constituentRows[i].sector;
+    const isSelected = selectedTickers.includes(sym);
+    if (isSelected === false) {
+      continue;
+    }
+
+    const r = byTicker[sym] || {};
+    const isSurvivor = screenSurvivors.includes(sym);
     const lbl = state.labels && state.labels[sym] ? state.labels[sym] : null;
-    const isGated = Array.isArray(state.gatedSurvivors) && state.gatedSurvivors.includes(sym);
+    const isGated = gatedSurvivors.includes(sym);
     const cleanReason = lbl && typeof lbl.reason === "string" ? lbl.reason.replace(/[0-9]/g, "").trim() : "";
+
+    let gateOutcome = "screened out";
+    if (isSurvivor === true) {
+      if (lbl && lbl.label === "Headwind" && gateMode === "exclude") {
+        gateOutcome = "dropped";
+      } else if (lbl && lbl.label === "Headwind" && gateMode === "warn") {
+        gateOutcome = "kept with warning";
+      } else {
+        gateOutcome = isGated ? "kept" : "dropped";
+      }
+    }
+
+    const tObj = {
+      ticker: sym,
+      sector: sec,
+      rsi: typeof r.rsi === "number" ? formatTwoDecimals(r.rsi) : "N/A",
+      histogramNow: typeof r.histogramNow === "number" ? formatSignedPercent(r.histogramNow) : (typeof r.histogram === "number" ? formatSignedPercent(r.histogram) : "N/A"),
+      histogramNAgo: typeof r.histogramNAgo === "number" ? formatSignedPercent(r.histogramNAgo) : "N/A",
+      oversoldPass: r.isOversold === true ? "pass" : `fail (${typeof r.rsi === "number" ? formatTwoDecimals(r.rsi) : "N/A"})`,
+      turningPass: r.isMomentumTurn === true ? "pass" : "fail",
+      technicalOutcome: isSurvivor ? "survivor" : "screened out"
+    };
+
+    if (isSurvivor === true) {
+      tObj.label = lbl ? lbl.label : "Unclassified";
+      tObj.reason = cleanReason;
+      tObj.alertsCited = lbl && Array.isArray(lbl.alertsCited) && lbl.alertsCited.length > 0 ? lbl.alertsCited.join(", ") : "none";
+      tObj.gateOutcome = gateOutcome;
+
+      if (lbl && lbl.label === "Headwind") {
+        if (gateMode === "exclude") {
+          headwindNames.push({ ticker: sym, status: "Dropped", reason: cleanReason });
+        } else {
+          headwindNames.push({ ticker: sym, status: "Kept with warning", reason: cleanReason });
+        }
+      }
+
+      textLabels.push({
+        ticker: sym,
+        label: lbl ? lbl.label : "Unclassified",
+        reason: cleanReason,
+        gateMode: gateMode,
+        disposition: gateOutcome
+      });
+    }
+
+    tickersList.push(tObj);
 
     signals.push({
       ticker: sym,
@@ -10799,63 +10955,37 @@ export function buildNotePayload(state = appState) {
     });
   }
 
-  const textLabels = [];
-  const headwindNames = [];
-  const screenSurvivors = state.screenResult && Array.isArray(state.screenResult.survivors)
-    ? state.screenResult.survivors
-    : (Array.isArray(state.gatedSurvivors) ? state.gatedSurvivors : []);
-
-  for (let i = 0; i < screenSurvivors.length; i += 1) {
-    const sym = screenSurvivors[i];
-    const lbl = state.labels && state.labels[sym] ? state.labels[sym] : null;
-    const labelVal = lbl ? lbl.label : "Unclassified";
-    const reasonVal = lbl && typeof lbl.reason === "string" ? lbl.reason.replace(/[0-9]/g, "").trim() : "";
-    const isGated = Array.isArray(state.gatedSurvivors) && state.gatedSurvivors.includes(sym);
-
-    let disposition = "";
-    if (labelVal === "Headwind") {
-      if (gateMode === "exclude") {
-        disposition = `Dropped due to flagged macro headwind: ${reasonVal}`;
-        headwindNames.push({ ticker: sym, status: "Dropped", reason: reasonVal });
-      } else {
-        disposition = `Kept with warning (warn mode active): ${reasonVal}`;
-        headwindNames.push({ ticker: sym, status: "Kept with warning", reason: reasonVal });
-      }
-    } else {
-      disposition = isGated ? "Kept in candidate portfolio" : "Excluded by gate";
-    }
-
-    textLabels.push({
-      ticker: sym,
-      label: labelVal,
-      reason: reasonVal,
-      gateMode: gateMode,
-      disposition: disposition
-    });
-  }
-
+  // Weights & Allocations for methods
   const methodKeys = ["minVariance", "equalWeight", "inverseVolatility"];
+  const weightsObj = {};
   const weightsAndAllocations = {};
-  const survivors = Array.isArray(state.gatedSurvivors) ? state.gatedSurvivors : [];
 
   for (let m = 0; m < methodKeys.length; m += 1) {
     const mKey = methodKeys[m];
+    const met = state.metrics && state.metrics[mKey] ? state.metrics[mKey] : null;
     const wList = state.weights && Array.isArray(state.weights[mKey]) ? state.weights[mKey] : [];
     const aList = state.weights && state.weights.allocations && Array.isArray(state.weights.allocations[mKey])
       ? state.weights.allocations[mKey]
       : (state.dollarAllocations && Array.isArray(state.dollarAllocations[mKey]) ? state.dollarAllocations[mKey] : []);
 
+    const perName = [];
     const positions = [];
     let largestWeight = 0;
     let largestDollar = 0;
     let largestTicker = "";
 
-    for (let i = 0; i < survivors.length; i += 1) {
-      const sym = survivors[i];
+    for (let i = 0; i < gatedSurvivors.length; i += 1) {
+      const sym = gatedSurvivors[i];
       const w = typeof wList[i] === "number" ? wList[i] : 0;
       const a = typeof aList[i] === "number" ? aList[i] : Math.round(w * inv);
-      const uObj = Array.isArray(state.universe) ? state.universe.find((u) => u.ticker === sym) : null;
+      const uObj = universeRows.find((u) => u.ticker === sym);
       const sector = uObj ? uObj.sector : "Unknown Sector";
+
+      perName.push({
+        ticker: sym,
+        weight: formatPercentage(w),
+        dollars: formatWholeDollars(a)
+      });
 
       positions.push({
         ticker: sym,
@@ -10875,6 +11005,18 @@ export function buildNotePayload(state = appState) {
 
     positions.sort((a, b) => b.weightNum - a.weightNum);
 
+    weightsObj[mKey] = {
+      feasible: met && met.feasible !== undefined ? (met.feasible === true ? "yes" : "no") : "yes",
+      perName: perName,
+      largestWeight: formatPercentage(largestWeight),
+      largestPositionTicker: largestTicker || "None",
+      largestPositionDollars: formatWholeDollars(largestDollar),
+      annualizedReturn: met && typeof met.annualizedReturn === "number" ? formatPercentage(met.annualizedReturn) : "N/A",
+      annualizedVolatility: met && typeof met.annualizedVolatility === "number" ? formatPercentage(met.annualizedVolatility) : "N/A",
+      sharpe: met && typeof met.sharpe === "number" ? formatSharpe(met.sharpe) : "N/A",
+      sampleLabel: "in-sample"
+    };
+
     weightsAndAllocations[mKey] = {
       positions: positions.map((p) => ({
         ticker: p.ticker,
@@ -10888,6 +11030,7 @@ export function buildNotePayload(state = appState) {
     };
   }
 
+  // Portfolio metrics alias
   const portfolioMetrics = {};
   for (let m = 0; m < methodKeys.length; m += 1) {
     const mKey = methodKeys[m];
@@ -10901,17 +11044,89 @@ export function buildNotePayload(state = appState) {
     };
   }
 
+  // References (SPY and unscreened)
+  let spyISRet = 0;
+  let spyISVol = 0;
+  let spyISSharpe = 0;
+  const hasAlignedSpy = hasAligned === true && state.alignedData.spy && Array.isArray(state.alignedData.spy.prices) && state.alignedData.spy.prices.length >= 2;
+  if (hasAlignedSpy === true) {
+    const sp = state.alignedData.spy.prices;
+    const rets = [];
+    for (let i = 1; i < sp.length; i += 1) {
+      if (sp[i - 1] > 0) {
+        rets.push((sp[i] - sp[i - 1]) / sp[i - 1]);
+      }
+    }
+    if (rets.length > 0) {
+      const meanR = rets.reduce((a, b) => a + b, 0) / rets.length;
+      spyISRet = meanR * 252;
+      const varR = rets.reduce((a, b) => a + Math.pow(b - meanR, 2), 0) / (rets.length - 1 || 1);
+      spyISVol = Math.sqrt(varR) * Math.sqrt(252);
+      spyISSharpe = spyISVol > 0 ? (spyISRet - rf) / spyISVol : 0;
+    }
+  }
+
+  let basketISRet = 0;
+  let basketISVol = 0;
+  let basketISSharpe = 0;
+  const hasAlignedConstituents = hasAligned === true && state.alignedData.prices && typeof state.alignedData.prices === "object";
+  if (hasAlignedConstituents === true) {
+    const symbols = Object.keys(state.alignedData.prices);
+    const dateCount = state.alignedData.dates ? state.alignedData.dates.length : 0;
+    if (symbols.length > 0 && dateCount >= 2) {
+      const basketDailyRets = [];
+      for (let d = 1; d < dateCount; d += 1) {
+        let sumDayRet = 0;
+        let validCount = 0;
+        for (let s = 0; s < symbols.length; s += 1) {
+          const sym = symbols[s];
+          const pArr = state.alignedData.prices[sym];
+          if (pArr && pArr[d - 1] > 0) {
+            sumDayRet += (pArr[d] - pArr[d - 1]) / pArr[d - 1];
+            validCount += 1;
+          }
+        }
+        if (validCount > 0) {
+          basketDailyRets.push(sumDayRet / validCount);
+        }
+      }
+      if (basketDailyRets.length > 0) {
+        const meanBR = basketDailyRets.reduce((a, b) => a + b, 0) / basketDailyRets.length;
+        basketISRet = meanBR * 252;
+        const varBR = basketDailyRets.reduce((a, b) => a + Math.pow(b - meanBR, 2), 0) / (basketDailyRets.length - 1 || 1);
+        basketISVol = Math.sqrt(varBR) * Math.sqrt(252);
+        basketISSharpe = basketISVol > 0 ? (basketISRet - rf) / basketISVol : 0;
+      }
+    }
+  }
+
+  const references = {
+    spy: {
+      annualizedReturn: formatPercentage(spyISRet),
+      annualizedVolatility: formatPercentage(spyISVol),
+      sharpe: formatSharpe(spyISSharpe),
+      label: "not a candidate"
+    },
+    unscreened: {
+      annualizedReturn: formatPercentage(basketISRet),
+      annualizedVolatility: formatPercentage(basketISVol),
+      sharpe: formatSharpe(basketISSharpe),
+      label: "not a candidate"
+    }
+  };
+
+  // Sectors list
   const sectorSummary = {};
   const mvWeights = state.weights && Array.isArray(state.weights.minVariance) ? state.weights.minVariance : [];
   const mvAllocs = state.weights && state.weights.allocations && Array.isArray(state.weights.allocations.minVariance)
     ? state.weights.allocations.minVariance
     : [];
 
-  for (let i = 0; i < survivors.length; i += 1) {
-    const sym = survivors[i];
+  for (let i = 0; i < gatedSurvivors.length; i += 1) {
+    const sym = gatedSurvivors[i];
     const w = typeof mvWeights[i] === "number" ? mvWeights[i] : 0;
     const a = typeof mvAllocs[i] === "number" ? mvAllocs[i] : Math.round(w * inv);
-    const uObj = Array.isArray(state.universe) ? state.universe.find((u) => u.ticker === sym) : null;
+    const uObj = universeRows.find((u) => u.ticker === sym);
     const sector = uObj ? uObj.sector : "Unknown Sector";
 
     if (!sectorSummary[sector]) {
@@ -10922,6 +11137,12 @@ export function buildNotePayload(state = appState) {
     sectorSummary[sector].tickers.push(sym);
   }
 
+  const sectorsList = Object.keys(sectorSummary).map((sec) => ({
+    sector: sec,
+    totalWeight: formatPercentage(sectorSummary[sec].weight),
+    limit: "50%"
+  }));
+
   const sectorExposures = Object.keys(sectorSummary).map((sec) => ({
     sector: sec,
     totalWeight: formatPercentage(sectorSummary[sec].weight),
@@ -10930,46 +11151,118 @@ export function buildNotePayload(state = appState) {
     constituents: sectorSummary[sec].tickers.join(", ")
   })).sort((a, b) => parseFloat(b.totalWeight) - parseFloat(a.totalWeight));
 
+  // Beta
   const betaObj = state.beta;
   const isBetaAvail = betaObj !== null && typeof betaObj === "object" && betaObj.available === true && typeof betaObj.current === "number";
   const betaCurrentStr = isBetaAvail === true
     ? formatBeta(betaObj.current)
     : (betaObj && typeof betaObj.currentBeta === "number" ? formatBeta(betaObj.currentBeta) : "Unavailable");
   const betaWindowStr = `${betaObj && betaObj.window ? betaObj.window : 60}-session window`;
-  const betaStatusStr = (betaObj && betaObj.available === false) ? (betaObj.reason || "SPY unavailable") : "Available";
+
+  const beta = {
+    current: betaCurrentStr,
+    windowSessions: "60"
+  };
 
   const rollingBeta = {
     currentBeta: betaCurrentStr,
     window: betaWindowStr,
     benchmark: "SPY",
-    status: betaStatusStr
+    status: (betaObj && betaObj.available === false) ? (betaObj.reason || "SPY unavailable") : "Available"
   };
 
-  let backtestPayload = null;
+  // Backtest
+  let backtestPayload = "backtest not run";
   const hasBacktest = state.backtest !== null && typeof state.backtest === "object";
+  const isBacktestStale = state.stageStatus[9] === "stale";
+
   if (hasBacktest === true) {
-    backtestPayload = {
-      verdict: state.backtest.verdict,
-      holdingPeriod: `${state.backtest.settings.holdingPeriod} sessions`,
-      exitThreshold: `${state.backtest.settings.exitThreshold}`,
-      cadence: `${state.backtest.settings.cadence} sessions`,
-      screenEffectMean: formatPercentage(state.backtest.attribution.screenEffect.mean),
-      screenEffectHitRate: formatPercentage(state.backtest.attribution.screenEffect.hitRate),
-      optimizerEffectMean: formatPercentage(state.backtest.attribution.optimizerEffect.mean),
-      optimizerEffectHitRate: formatPercentage(state.backtest.attribution.optimizerEffect.hitRate),
-      limitations: [
-        "Survivorship bias: Evaluated using current index constituents rather than point-in-time membership.",
-        "Single-regime risk: Three-year backtest window covers a limited set of macroeconomic regimes."
-      ]
-    };
+    if (isBacktestStale === true) {
+      backtestPayload = "backtest stale";
+    } else {
+      const summary = state.backtest.summary || {};
+      const attr = state.backtest.attribution || {};
+      backtestPayload = {
+        holdingPeriod: `${state.backtest.settings ? state.backtest.settings.holdingPeriod : 20} sessions`,
+        exitThreshold: `${state.backtest.settings ? state.backtest.settings.exitThreshold : 45}`,
+        cadence: `${state.backtest.settings ? state.backtest.settings.cadence : 5} sessions`,
+        entryDates: String(state.backtest.entryDatesCount || (state.backtest.entryDates ? state.backtest.entryDates.length : 0)),
+        nonOverlappingEntryDates: String(state.backtest.nonOverlappingDatesCount || 0),
+        noTradeDates: String(state.backtest.noTradeDatesCount || 0),
+        perBasket: {
+          minimumVariance: {
+            trades: String(summary.minVariance ? summary.minVariance.trades : 0),
+            meanForwardReturn: summary.minVariance ? formatPercentage(summary.minVariance.meanReturn) : "N/A",
+            medianForwardReturn: summary.minVariance ? formatPercentage(summary.minVariance.medianReturn) : "N/A",
+            hitRateVsSpy: summary.minVariance ? formatPercentage(summary.minVariance.hitRateVsSpy) : "N/A",
+            worstForwardReturn: summary.minVariance ? formatPercentage(summary.minVariance.worstReturn) : "N/A",
+            meanMaxDrawdown: summary.minVariance ? formatPercentage(summary.minVariance.meanMaxDrawdown) : "N/A"
+          },
+          equalWeight: {
+            trades: String(summary.equalWeight ? summary.equalWeight.trades : 0),
+            meanForwardReturn: summary.equalWeight ? formatPercentage(summary.equalWeight.meanReturn) : "N/A",
+            medianForwardReturn: summary.equalWeight ? formatPercentage(summary.equalWeight.medianReturn) : "N/A",
+            hitRateVsSpy: summary.equalWeight ? formatPercentage(summary.equalWeight.hitRateVsSpy) : "N/A",
+            worstForwardReturn: summary.equalWeight ? formatPercentage(summary.equalWeight.worstReturn) : "N/A",
+            meanMaxDrawdown: summary.equalWeight ? formatPercentage(summary.equalWeight.meanMaxDrawdown) : "N/A"
+          },
+          inverseVolatility: {
+            trades: String(summary.inverseVolatility ? summary.inverseVolatility.trades : 0),
+            meanForwardReturn: summary.inverseVolatility ? formatPercentage(summary.inverseVolatility.meanReturn) : "N/A",
+            medianForwardReturn: summary.inverseVolatility ? formatPercentage(summary.inverseVolatility.medianReturn) : "N/A",
+            hitRateVsSpy: summary.inverseVolatility ? formatPercentage(summary.inverseVolatility.hitRateVsSpy) : "N/A",
+            worstForwardReturn: summary.inverseVolatility ? formatPercentage(summary.inverseVolatility.worstReturn) : "N/A",
+            meanMaxDrawdown: summary.inverseVolatility ? formatPercentage(summary.inverseVolatility.meanMaxDrawdown) : "N/A"
+          },
+          spy: {
+            trades: String(summary.spy ? summary.spy.trades : 0),
+            meanForwardReturn: summary.spy ? formatPercentage(summary.spy.meanReturn) : "N/A",
+            medianForwardReturn: summary.spy ? formatPercentage(summary.spy.medianReturn) : "N/A",
+            hitRateVsSpy: "N/A",
+            worstForwardReturn: summary.spy ? formatPercentage(summary.spy.worstReturn) : "N/A",
+            meanMaxDrawdown: summary.spy ? formatPercentage(summary.spy.meanMaxDrawdown) : "N/A"
+          },
+          unscreened: {
+            trades: String(summary.unscreenedBasket ? summary.unscreenedBasket.trades : 0),
+            meanForwardReturn: summary.unscreenedBasket ? formatPercentage(summary.unscreenedBasket.meanReturn) : "N/A",
+            medianForwardReturn: summary.unscreenedBasket ? formatPercentage(summary.unscreenedBasket.medianReturn) : "N/A",
+            hitRateVsSpy: summary.unscreenedBasket ? formatPercentage(summary.unscreenedBasket.hitRateVsSpy) : "N/A",
+            worstForwardReturn: summary.unscreenedBasket ? formatPercentage(summary.unscreenedBasket.worstReturn) : "N/A",
+            meanMaxDrawdown: summary.unscreenedBasket ? formatPercentage(summary.unscreenedBasket.meanMaxDrawdown) : "N/A"
+          }
+        },
+        attribution: {
+          screenEffectMean: attr.screenEffect ? formatPercentage(attr.screenEffect.mean) : "N/A",
+          screenEffectHitRate: attr.screenEffect ? formatPercentage(attr.screenEffect.hitRate) : "N/A",
+          optimizerEffectMean: attr.optimizerEffect ? formatPercentage(attr.optimizerEffect.mean) : "N/A",
+          optimizerEffectHitRate: attr.optimizerEffect ? formatPercentage(attr.optimizerEffect.hitRate) : "N/A"
+        },
+        verdict: state.backtest.verdict || "supported",
+        scopeLabel: "technical screen and optimizer, text gate not tested",
+        limitations: [
+          "Survivorship bias: Evaluated using current index constituents rather than point-in-time membership.",
+          "Single-regime risk: Three-year backtest window covers a limited set of macroeconomic regimes."
+        ]
+      };
+    }
   }
 
   const payload = {
     thesisStatement: THESIS_STATEMENT,
+    universe: universe,
+    settingsUsed: settingsUsed,
+    dataWindow: dataWindow,
+    counts: counts,
+    tickers: tickersList,
+    weights: weightsObj,
+    references: references,
+    sectors: sectorsList,
+    beta: beta,
+    backtest: backtestPayload,
+    // Display and backward-compatible aliases
     investmentAmount: formatWholeDollars(inv),
     investmentAmountPlain: inv.toLocaleString("en-US"),
     investmentAmountRaw: `${inv.toLocaleString("en-US")} USD`,
-    settingsUsed: settingsUsed,
     alignedDateRange: alignedHistory,
     perTickerSignals: signals,
     textLabels: textLabels,
@@ -10977,12 +11270,38 @@ export function buildNotePayload(state = appState) {
     weightsAndAllocations: weightsAndAllocations,
     portfolioMetrics: portfolioMetrics,
     sectorConcentration: sectorExposures,
-    rollingBeta: rollingBeta,
-    backtest: backtestPayload
+    rollingBeta: rollingBeta
   };
 
   state.notePayload = payload;
   return payload;
+}
+
+/**
+ * Marks the committee note stale when any input that feeds the payload changes.
+ * Whenever a note exists and any input that feeds the payload changes:
+ * a setting in settingsUsed (including gate mode and relaxation), investment amount,
+ * universe or selection, text label, price refresh, or completion of Run backtest:
+ * state.noteStale becomes true, Stage 8 status badge changes to stale, and an alert banner appears.
+ *
+ * @param {string} [reason="inputs changed"]
+ */
+export function markNoteStale(reason = "inputs changed") {
+  const hasNote = appState.note !== null &&
+    appState.note !== undefined &&
+    appState.note !== "" &&
+    appState.note !== "Note unavailable" &&
+    (typeof appState.note === "string" ? appState.note.trim().length > 0 : (appState.note && appState.note.text && appState.note.text !== "Note unavailable"));
+
+  if (hasNote === true) {
+    appState.noteStale = true;
+    appState.noteStaleReason = reason;
+    if (typeof appState.note === "object" && appState.note !== null) {
+      appState.note.isStale = true;
+    }
+    setStageStatus(8, "stale");
+    renderStage8UI();
+  }
 }
 
 /**
@@ -11303,21 +11622,24 @@ export async function generateNote(state = appState, isRegenerate = false) {
       text: "Note unavailable",
       error: "OpenRouter API Key field in Settings is missing. Please enter your API key in Settings.",
       investmentAmount: state.settings.investmentAmount || 1000000,
-      isStale: false,
+      isStale: state.noteStale === true,
       timestamp: new Date().toISOString()
     };
     state.notePostCheck = {
       passed: false,
       reason: "OpenRouter API key missing",
+      problems: [{ type: "call-failure", detail: "OpenRouter API Key field in Settings is missing." }],
       failures: ["OpenRouter API key missing"],
       wordCount: 0,
       evaluatedAt: new Date().toISOString()
     };
+    state.noteRequestInFlight = false;
     setStageStatus(8, "done");
     renderStage8UI();
     return false;
   }
 
+  state.noteRequestInFlight = true;
   setStageStatus(8, "running");
   renderStage8UI();
 
@@ -11327,6 +11649,7 @@ export async function generateNote(state = appState, isRegenerate = false) {
   const requestPayload = {
     model: modelId,
     temperature: 0,
+    max_tokens: 700,
     messages: [
       { role: "system", content: NOTE_SYSTEM_PROMPT },
       { role: "user", content: userContent }
@@ -11339,7 +11662,7 @@ export async function generateNote(state = appState, isRegenerate = false) {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${apiKey}`,
       "HTTP-Referer": "https://ai.studio/",
-      "X-Title": "Momentum Value Asset Allocation"
+      "X-Title": "Oversold Turn"
     },
     body: JSON.stringify(requestPayload)
   };
@@ -11389,16 +11712,18 @@ export async function generateNote(state = appState, isRegenerate = false) {
       text: "Note unavailable",
       error: failureMessage,
       investmentAmount: state.settings.investmentAmount || 1000000,
-      isStale: false,
+      isStale: state.noteStale === true,
       timestamp: new Date().toISOString()
     };
     state.notePostCheck = {
       passed: false,
       reason: failureMessage,
+      problems: [{ type: "call-failure", detail: failureMessage }],
       failures: [failureMessage],
       wordCount: 0,
       evaluatedAt: new Date().toISOString()
     };
+    state.noteRequestInFlight = false;
     setStageStatus(8, "done");
     renderStage8UI();
     return false;
@@ -11424,10 +11749,13 @@ export async function generateNote(state = appState, isRegenerate = false) {
       isStale: false,
       timestamp: new Date().toISOString()
     };
+    state.noteStale = false;
+    state.noteStaleReason = null;
 
-    const postCheckResult = runNotePostCheck(noteContent, payload);
+    const postCheckResult = postCheckNote(noteContent, payload);
     state.notePostCheck = postCheckResult;
 
+    state.noteRequestInFlight = false;
     setStageStatus(8, "done");
     renderStage8UI();
     return true;
@@ -11436,16 +11764,18 @@ export async function generateNote(state = appState, isRegenerate = false) {
       text: "Note unavailable",
       error: parseErr.message || String(parseErr),
       investmentAmount: state.settings.investmentAmount || 1000000,
-      isStale: false,
+      isStale: state.noteStale === true,
       timestamp: new Date().toISOString()
     };
     state.notePostCheck = {
       passed: false,
       reason: parseErr.message || String(parseErr),
+      problems: [{ type: "parse-failure", detail: parseErr.message || String(parseErr) }],
       failures: [parseErr.message || String(parseErr)],
       wordCount: 0,
       evaluatedAt: new Date().toISOString()
     };
+    state.noteRequestInFlight = false;
     setStageStatus(8, "done");
     renderStage8UI();
     return false;
@@ -11595,6 +11925,21 @@ export function renderStage8UI() {
     }
     if (container !== null) {
       container.classList.add("hidden");
+    }
+    const backtestCallout = document.getElementById("stage-8-backtest-callout");
+    if (backtestCallout !== null) {
+      const isStage8Blocked = appState.stageStatus[8] === "blocked" || appState.stageStatus[7] === "blocked";
+      const isStage2Done = appState.stageStatus[2] === "done";
+      const spySeries = appState.priceCache["SPY"] || [];
+      const hasPrices = isStage2Done === true || (Array.isArray(spySeries) && spySeries.length >= 500);
+      if (isStage8Blocked === true && hasPrices === true) {
+        backtestCallout.classList.remove("hidden");
+      } else {
+        backtestCallout.classList.add("hidden");
+      }
+    }
+    if (typeof renderStage9UI === "function") {
+      renderStage9UI();
     }
     return;
   }
@@ -12018,21 +12363,97 @@ export function renderStage8UI() {
 
   // 6. Note stale alert & body
   const staleAlert = document.getElementById("stage-8-note-stale-alert");
+  const staleText = document.getElementById("stage-8-note-stale-text");
   const noteBody = document.getElementById("stage-8-note-body");
   const noteBadge = document.getElementById("stage-8-note-status-badge");
+  const btnRegenNote = document.getElementById("btn-regenerate-note");
 
-  const noteIsStale = appState.note !== null && (appState.note.isStale === true || appState.note.investmentAmount !== appState.settings.investmentAmount);
+  if (btnRegenNote !== null) {
+    btnRegenNote.disabled = appState.noteRequestInFlight === true;
+  }
 
   if (staleAlert !== null) {
-    if (noteIsStale === true) {
+    if (appState.noteStale === true) {
       staleAlert.classList.remove("hidden");
+      if (staleText !== null) {
+        staleText.textContent = (appState.noteStaleReason || "Inputs feeding the note have changed") + ". Regenerate note is required.";
+      }
     } else {
       staleAlert.classList.add("hidden");
     }
   }
 
+  if (noteBadge !== null) {
+    if (appState.noteRequestInFlight === true) {
+      noteBadge.textContent = "Generating...";
+      noteBadge.className = "badge";
+    } else if (appState.note !== null && typeof appState.note.text === "string") {
+      if (appState.note.text === "Note unavailable") {
+        noteBadge.textContent = "Unavailable";
+        noteBadge.className = "badge status-blocked";
+      } else if (appState.noteStale === true) {
+        noteBadge.textContent = "Stale";
+        noteBadge.className = "badge badge-stale";
+      } else {
+        noteBadge.textContent = "Ready";
+        noteBadge.className = "badge badge-status-pass";
+      }
+    } else {
+      noteBadge.textContent = "Pending";
+      noteBadge.className = "badge";
+    }
+  }
+
+  const wireNoteTextarea = () => {
+    const ta = document.getElementById("stage-8-note-textarea");
+    if (ta !== null && ta.dataset.bound !== "true") {
+      ta.dataset.bound = "true";
+      let editTimer = null;
+      const saveAndRecheck = (val) => {
+        if (appState.note === null || typeof appState.note !== "object") {
+          appState.note = {
+            text: val,
+            error: null,
+            investmentAmount: appState.settings.investmentAmount || 1000000,
+            isStale: appState.noteStale === true,
+            timestamp: new Date().toISOString()
+          };
+        } else {
+          appState.note.text = val;
+        }
+        clearReview();
+        const payload = appState.notePayload || buildNotePayload(appState);
+        appState.notePostCheck = postCheckNote(val, payload);
+        renderStage8PostCheckUI();
+        syncAllExportButtons();
+      };
+
+      ta.addEventListener("input", (e) => {
+        if (editTimer !== null) clearTimeout(editTimer);
+        editTimer = setTimeout(() => {
+          saveAndRecheck(e.target.value);
+        }, 500);
+      });
+
+      ta.addEventListener("blur", (e) => {
+        if (editTimer !== null) {
+          clearTimeout(editTimer);
+          editTimer = null;
+        }
+        saveAndRecheck(e.target.value);
+      });
+    }
+  };
+
   if (noteBody !== null) {
-    if (appState.note !== null && typeof appState.note.text === "string") {
+    if (appState.noteRequestInFlight === true) {
+      noteBody.innerHTML = `
+        <div class="stage-8-note-loading" id="stage-8-note-loading">
+          <div class="stage-8-note-loading-spinner"></div>
+          <span>Generating committee note via OpenRouter...</span>
+        </div>
+      `;
+    } else if (appState.note !== null && typeof appState.note.text === "string") {
       const isUnavailable = appState.note.text === "Note unavailable";
       if (isUnavailable === true) {
         const errorDetail = appState.note.error
@@ -12040,34 +12461,87 @@ export function renderStage8UI() {
           : "";
         noteBody.innerHTML = `
           ${errorDetail}
-          <p class="stage-8-note-unavailable-msg text-secondary" id="stage-8-note-unavailable-msg">Note unavailable. Press "Regenerate note" to attempt another call.</p>
+          <p class="stage-8-note-unavailable-msg text-secondary mb-3" id="stage-8-note-unavailable-msg">Note unavailable. Press "Regenerate note" to attempt another call.</p>
+          <textarea id="stage-8-note-textarea" class="stage-8-note-textarea" rows="12" aria-label="Investment Committee Note">${escapeHtml(appState.note.text)}</textarea>
         `;
-        if (noteBadge !== null) {
-          noteBadge.textContent = "Unavailable";
-          noteBadge.className = "badge status-blocked";
-        }
+        wireNoteTextarea();
       } else {
-        const paragraphs = appState.note.text.split(/\n\n+/).filter(Boolean);
-        if (paragraphs.length > 1) {
-          noteBody.innerHTML = paragraphs.map((p, idx) => `<p class="stage-8-note-paragraph mb-3" id="stage-8-note-p-${idx}">${escapeHtml(p.trim())}</p>`).join("");
+        const existingTextarea = document.getElementById("stage-8-note-textarea");
+        if (existingTextarea !== null) {
+          if (document.activeElement !== existingTextarea) {
+            existingTextarea.value = appState.note.text;
+          }
+          wireNoteTextarea();
         } else {
-          noteBody.textContent = appState.note.text;
-        }
-        if (noteBadge !== null) {
-          noteBadge.textContent = "Ready";
-          noteBadge.className = "badge badge-status-pass";
+          noteBody.innerHTML = `<textarea id="stage-8-note-textarea" class="stage-8-note-textarea" rows="12" aria-label="Investment Committee Note">${escapeHtml(appState.note.text)}</textarea>`;
+          wireNoteTextarea();
         }
       }
     } else {
       noteBody.innerHTML = `<p class="stage-8-note-placeholder-msg text-secondary">Stage 8: Portfolio allocations and investment note will be rendered here.</p>`;
-      if (noteBadge !== null) {
-        noteBadge.textContent = "Pending";
-        noteBadge.className = "badge";
-      }
     }
   }
 
-  // 6b. Post-check warning & results rendering (Prompt 20)
+  // 6b. Post-check warning & results rendering
+  renderStage8PostCheckUI();
+
+  // 6c. Show Stage 9 backtest callout when Stage 8 is blocked, note unavailable, or guardrails failed
+  const backtestCallout = document.getElementById("stage-8-backtest-callout");
+  if (backtestCallout !== null) {
+    const isStage8Blocked = appState.stageStatus[8] === "blocked";
+    const isNoteUnavailable = appState.note !== null && appState.note.text === "Note unavailable";
+    const failures = evaluateGuardrails();
+    const hasFailures = failures.length > 0;
+    const shouldShowCallout = isStage8Blocked === true || isNoteUnavailable === true || hasFailures === true;
+
+    if (shouldShowCallout === true) {
+      backtestCallout.classList.remove("hidden");
+    } else {
+      backtestCallout.classList.add("hidden");
+    }
+  }
+
+  // 7. Export button synchronization
+  syncAllExportButtons();
+
+  // 8. Always synchronize Stage 9 UI when Stage 8 is rendered
+  if (typeof renderStage9UI === "function") {
+    renderStage9UI();
+  }
+}
+
+/**
+ * Synchronizes all export buttons across the application with guardrails, review status, and note staleness.
+ */
+export function syncAllExportButtons() {
+  const btnExport = document.getElementById("btn-stage-8-export-portfolio");
+  const s7Export = document.getElementById("btn-export-portfolio");
+  const failures = evaluateGuardrails();
+  const guardrailsPass = failures.length === 0;
+  const canExport = appState.reviewed === true && guardrailsPass === true && appState.noteStale === false;
+
+  if (btnExport !== null) {
+    btnExport.disabled = canExport === false;
+    if (appState.noteStale === true) {
+      btnExport.title = "Regenerate note is required before exporting";
+    } else {
+      btnExport.removeAttribute("title");
+    }
+  }
+  if (s7Export !== null) {
+    s7Export.disabled = canExport === false;
+    if (appState.noteStale === true) {
+      s7Export.title = "Regenerate note is required before exporting";
+    } else {
+      s7Export.removeAttribute("title");
+    }
+  }
+}
+
+/**
+ * Renders the Stage 8 post-check warning banner and detailed issues card.
+ */
+export function renderStage8PostCheckUI() {
   const postCheckContainer = document.getElementById("stage-8-postcheck-container");
   const postCheckActionBanner = document.getElementById("stage-8-postcheck-warning-banner");
 
@@ -12126,13 +12600,6 @@ export function renderStage8UI() {
     } else {
       postCheckActionBanner.innerHTML = "";
     }
-  }
-
-  // 7. Export button synchronization
-  const btnExport = document.getElementById("btn-stage-8-export-portfolio");
-  if (btnExport !== null) {
-    const canExport = appState.reviewed === true && appState.guardrailPassed === true;
-    btnExport.disabled = canExport === false;
   }
 }
 
@@ -12202,6 +12669,31 @@ export function setupStage8() {
   if (btnStage8Export !== null) {
     btnStage8Export.onclick = () => {
       exportPortfolio();
+    };
+  }
+
+  const btnGotoStep9 = document.getElementById("btn-goto-step-9");
+  if (btnGotoStep9 !== null) {
+    btnGotoStep9.onclick = () => {
+      const body9 = document.getElementById("stage-body-9");
+      const header9 = document.getElementById("stage-header-9");
+      if (body9 !== null) {
+        body9.classList.remove("collapsed");
+      }
+      if (header9 !== null) {
+        header9.setAttribute("aria-expanded", "true");
+      }
+      if (typeof renderStage9UI === "function") {
+        renderStage9UI();
+      }
+      const stageSection9 = document.getElementById("stage-section-9");
+      if (stageSection9 !== null) {
+        stageSection9.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      const runBtn = document.getElementById("btn-run-backtest");
+      if (runBtn !== null && runBtn.disabled === false) {
+        runBtn.focus();
+      }
     };
   }
 }
@@ -12283,23 +12775,34 @@ export function cancelBacktest() {
  * Starts the walk-forward backtest by spawning the dedicated Web Worker.
  */
 export function startBacktest() {
-  const isStage2Done = appState.stageStatus[2] === "done";
+  let isStage2Done = appState.stageStatus[2] === "done";
+  const spySeries = appState.priceCache["SPY"] || [];
+  const isSpySufficient = Array.isArray(spySeries) === true && spySeries.length >= 500;
+  const eligibleConstituents = (appState.selectedTickers || []).filter((t) => {
+    return t !== "SPY" && Array.isArray(appState.priceCache[t]) === true && appState.priceCache[t].length >= 500;
+  });
+  const minBreadth = appState.settings.minimumBreadth || 5;
+
+  // If Stage 2 was not explicitly marked done but price history was loaded, auto-align on the fly
+  if (isStage2Done === false && isSpySufficient === true && eligibleConstituents.length >= minBreadth) {
+    try {
+      alignAndCompleteStage2();
+      isStage2Done = appState.stageStatus[2] === "done";
+    } catch (alignErr) {
+      console.warn("Auto-alignment for backtest failed:", alignErr);
+    }
+  }
+
   if (isStage2Done === false) {
-    showStage9Alert("Stage 2 price alignment must complete before running backtest.", "error");
+    showStage9Alert("Stage 2 price history must be fetched before running backtest. Note: Stage 9 runs independently of Stage 8.", "error");
     return;
   }
 
-  const spySeries = appState.priceCache["SPY"] || [];
-  const isSpySufficient = Array.isArray(spySeries) === true && spySeries.length >= 500;
   if (isSpySufficient === false) {
     showStage9Alert(`SPY has ${spySeries.length} sessions. At least 500 sessions are required for the backtest benchmark.`, "error");
     return;
   }
 
-  const eligibleConstituents = (appState.selectedTickers || []).filter((t) => {
-    return t !== "SPY" && Array.isArray(appState.priceCache[t]) === true && appState.priceCache[t].length >= 500;
-  });
-  const minBreadth = appState.settings.minimumBreadth || 5;
   if (eligibleConstituents.length < minBreadth) {
     showStage9Alert(`Fewer than minimum breadth (${minBreadth}) constituents have at least 500 sessions (${eligibleConstituents.length} eligible).`, "error");
     return;
@@ -12329,76 +12832,110 @@ export function startBacktest() {
     pText.textContent = "0% (evaluating entry dates...)";
   }
 
+  const payload = {
+    priceCache: appState.priceCache,
+    selectedTickers: appState.selectedTickers,
+    universe: appState.universe,
+    settings: {
+      rsiThreshold: appState.settings.rsiThreshold,
+      histogramLookback: appState.settings.histogramLookback,
+      weightCap: appState.settings.weightCap,
+      minimumBreadth: appState.settings.minimumBreadth,
+      holdingPeriod: appState.settings.holdingPeriod || 20,
+      exitThreshold: appState.settings.exitThreshold || 60,
+      cadence: appState.settings.cadence || 5
+    }
+  };
+
+  const handleBacktestSuccess = (result) => {
+    appState.backtest = result;
+    setStageStatus(9, "done");
+    cleanUpBacktestWorker();
+    markNoteStale("Backtest completed");
+    renderStage8UI();
+    renderStage9UI();
+
+    // Expand stage 9 section
+    const body9 = document.getElementById("stage-body-9");
+    const header9 = document.getElementById("stage-header-9");
+    if (body9 !== null && body9.classList.contains("collapsed") === true) {
+      body9.classList.remove("collapsed");
+      if (header9 !== null) {
+        header9.setAttribute("aria-expanded", "true");
+      }
+    }
+  };
+
+  const handleBacktestError = (errMessage) => {
+    cleanUpBacktestWorker();
+    setStageStatus(9, appState.backtest !== null ? "done" : "idle");
+    showStage9Alert(`Backtest simulation failed: ${errMessage}`, "error");
+  };
+
+  const runDirectFallback = async () => {
+    try {
+      const { runBacktest } = await import("./backtestEngine.js");
+      const result = runBacktest(payload, (progress) => {
+        const fillEl = document.getElementById("backtest-progress-fill");
+        const textEl = document.getElementById("backtest-progress-text");
+        if (fillEl !== null) {
+          fillEl.style.width = `${progress.percent}%`;
+        }
+        if (textEl !== null) {
+          textEl.textContent = `${progress.percent}% (${progress.current}/${progress.total} dates)`;
+        }
+      });
+      handleBacktestSuccess(result);
+    } catch (fallbackErr) {
+      handleBacktestError(fallbackErr.message || String(fallbackErr));
+    }
+  };
+
   try {
     backtestWorkerInstance = new Worker(new URL("./backtestWorker.js", import.meta.url), { type: "module" });
-  } catch (workerErr) {
-    cleanUpBacktestWorker();
-    setStageStatus(9, appState.backtest !== null ? "done" : "idle");
-    showStage9Alert(`Failed to initialize Web Worker: ${workerErr.message || String(workerErr)}`, "error");
-    return;
-  }
 
-  backtestWorkerInstance.onmessage = (event) => {
-    const msg = event.data;
-    if (!msg || typeof msg !== "object") {
-      return;
-    }
-
-    if (msg.type === "PROGRESS") {
-      const fillEl = document.getElementById("backtest-progress-fill");
-      const textEl = document.getElementById("backtest-progress-text");
-      if (fillEl !== null) {
-        fillEl.style.width = `${msg.data.percent}%`;
+    backtestWorkerInstance.onmessage = (event) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== "object") {
+        return;
       }
-      if (textEl !== null) {
-        textEl.textContent = `${msg.data.percent}% (${msg.data.current}/${msg.data.total} dates)`;
-      }
-    } else if (msg.type === "DONE") {
-      appState.backtest = msg.data;
-      setStageStatus(9, "done");
-      cleanUpBacktestWorker();
-      renderStage8UI();
-      renderStage9UI();
 
-      // Expand stage 9 section
-      const body9 = document.getElementById("stage-body-9");
-      const header9 = document.getElementById("stage-header-9");
-      if (body9 !== null && body9.classList.contains("collapsed") === true) {
-        body9.classList.remove("collapsed");
-        if (header9 !== null) {
-          header9.setAttribute("aria-expanded", "true");
+      const msgType = String(msg.type || "").toUpperCase();
+
+      if (msgType === "PROGRESS") {
+        const progressData = msg.data || msg;
+        const fillEl = document.getElementById("backtest-progress-fill");
+        const textEl = document.getElementById("backtest-progress-text");
+        if (fillEl !== null) {
+          fillEl.style.width = `${progressData.percent}%`;
         }
+        if (textEl !== null) {
+          textEl.textContent = `${progressData.percent}% (${progressData.current}/${progressData.total} dates)`;
+        }
+      } else if (msgType === "DONE") {
+        const result = msg.data || msg.result;
+        handleBacktestSuccess(result);
+      } else if (msgType === "ERROR") {
+        const errorMsg = msg.error || (msg.data && msg.data.error) || "Backtest error";
+        handleBacktestError(errorMsg);
       }
-    } else if (msg.type === "ERROR") {
+    };
+
+    backtestWorkerInstance.onerror = (err) => {
+      console.warn("Worker execution error, falling back to direct engine:", err);
       cleanUpBacktestWorker();
-      setStageStatus(9, appState.backtest !== null ? "done" : "idle");
-      showStage9Alert(`Backtest simulation failed: ${msg.error}`, "error");
-    }
-  };
+      runDirectFallback();
+    };
 
-  backtestWorkerInstance.onerror = (err) => {
-    cleanUpBacktestWorker();
-    setStageStatus(9, appState.backtest !== null ? "done" : "idle");
-    showStage9Alert(`Worker execution error: ${err.message || String(err)}`, "error");
-  };
-
-  backtestWorkerInstance.postMessage({
-    type: "RUN_BACKTEST",
-    data: {
-      priceCache: appState.priceCache,
-      selectedTickers: appState.selectedTickers,
-      universe: appState.universe,
-      settings: {
-        rsiThreshold: appState.settings.rsiThreshold,
-        histogramLookback: appState.settings.histogramLookback,
-        weightCap: appState.settings.weightCap,
-        minimumBreadth: appState.settings.minimumBreadth,
-        holdingPeriod: appState.settings.holdingPeriod || 20,
-        exitThreshold: appState.settings.exitThreshold || 60,
-        cadence: appState.settings.cadence || 5
-      }
-    }
-  });
+    backtestWorkerInstance.postMessage({
+      type: "RUN_BACKTEST",
+      data: payload,
+      input: payload
+    });
+  } catch (workerErr) {
+    console.warn("Worker instantiation failed, running direct fallback:", workerErr);
+    runDirectFallback();
+  }
 }
 
 /**
@@ -12415,17 +12952,29 @@ export function renderStage9UI() {
   const isStage2Done = appState.stageStatus[2] === "done";
   const spySeries = appState.priceCache["SPY"] || [];
   const isSpySufficient = Array.isArray(spySeries) === true && spySeries.length >= 500;
+  const eligibleConstituents = (appState.selectedTickers || []).filter((t) => {
+    return t !== "SPY" && Array.isArray(appState.priceCache[t]) === true && appState.priceCache[t].length >= 500;
+  });
+  const minBreadth = appState.settings.minimumBreadth || 5;
+  const hasConstituents = eligibleConstituents.length >= minBreadth;
+  const hasPriceData = isSpySufficient === true && hasConstituents === true;
 
   if (runBtn !== null) {
-    if (isStage2Done === false) {
+    if (appState.stageStatus[9] === "running") {
+      runBtn.disabled = true;
+      runBtn.title = "Backtest simulation in progress...";
+    } else if (isStage2Done === false && hasPriceData === false) {
       runBtn.disabled = true;
       runBtn.title = "Stage 2 price alignment must complete before running backtest.";
     } else if (isSpySufficient === false) {
       runBtn.disabled = true;
       runBtn.title = `SPY has ${spySeries.length} sessions (minimum 500 required for backtest benchmark).`;
+    } else if (hasConstituents === false) {
+      runBtn.disabled = true;
+      runBtn.title = `Fewer than minimum breadth (${minBreadth}) constituents have 500 sessions.`;
     } else {
       runBtn.disabled = false;
-      runBtn.title = "Run walk-forward backtest simulation";
+      runBtn.title = "Run walk-forward backtest simulation (operates independently of Stage 8)";
     }
   }
 

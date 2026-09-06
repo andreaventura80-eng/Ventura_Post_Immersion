@@ -1,5 +1,5 @@
 {
-  "name": "GenAI Finance App",
+  "name": "Oversold Turn",
   "description": "Nine-stage quantitative portfolio pipeline with walk-forward backtesting, real-time stage tracking, and in-memory state architecture.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
