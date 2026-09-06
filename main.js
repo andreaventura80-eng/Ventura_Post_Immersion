@@ -7780,7 +7780,8 @@ export function validateWeights(w, cap = 0.25, sectorGroups = null) {
             sectorSum += w[idx];
           }
         }
-        const sectorWithinLimit = sectorSum <= 0.5 + 1e-9;
+        const sectorLimit = effectiveCap > 0.5 ? effectiveCap : 0.5;
+        const sectorWithinLimit = sectorSum <= sectorLimit + 1e-9;
         if (sectorWithinLimit === false) {
           return false;
         }
@@ -7835,6 +7836,7 @@ export function projectFeasible(v, cap, sectorGroups) {
   }
 
   const m = sectorIndicesList.length;
+  const sectorLimit = typeof cap === "number" && cap > 0.5 ? cap : 0.5;
 
   // Pre-allocate working memory to maintain allocation-free execution in the cycle loop
   const p = new Array(m + 1);
@@ -7882,9 +7884,9 @@ export function projectFeasible(v, cap, sectorGroups) {
         }
       }
 
-      const exceedsSectorLimit = sectorSum > 0.5;
+      const exceedsSectorLimit = sectorSum > sectorLimit;
       if (exceedsSectorLimit === true) {
-        const excess = sectorSum - 0.5;
+        const excess = sectorSum - sectorLimit;
         const reduction = excess / secIndices.length;
         for (let i = 0; i < n; i += 1) {
           tempProjected[i] = y[i];
@@ -7928,10 +7930,190 @@ export function projectFeasible(v, cap, sectorGroups) {
   // Assert that output adheres to all constraints within 1e-9 tolerance
   const isValid = validateWeights(result, cap, sectorGroups);
   if (isValid === false) {
-    throw new Error("projectFeasible assertion failed: output weights violate constraints (weight below 0, above cap, or sector above 0.5 by more than 1e-9).");
+    throw new Error("projectFeasible assertion failed: output weights violate constraints (weight below 0, above cap, or sector above limit by more than 1e-9).");
   }
 
   return result;
+}
+
+/**
+ * Computes the minimum variance portfolio weights via projected gradient descent (PGD):
+ * minimizes w' Sigma w
+ * subject to sum(w) = 1, 0 <= w_i <= cap, and every sector total <= 0.5.
+ *
+ * @param {number[][]} sigma - Covariance matrix of daily simple returns
+ * @param {number} [cap] - Maximum allowed weight per asset
+ * @param {Record<string, number[]>|Map<string, number[]>|null} [sectorGroups] - Map from sector name to constituent index arrays
+ * @returns {{ feasible: boolean, weights?: number[], iterations?: number, objective?: number, converged?: boolean, cause?: string, message?: string }}
+ */
+export function solveMinimumVariance(sigma, cap = undefined, sectorGroups = null) {
+  const isSigmaArray = Array.isArray(sigma) === true;
+  const n = isSigmaArray === true ? sigma.length : 0;
+  const hasNoDimensions = n === 0;
+  if (hasNoDimensions === true) {
+    return {
+      feasible: false,
+      cause: "Covariance matrix is empty."
+    };
+  }
+
+  let effectiveCap = cap;
+  const hasCap = typeof effectiveCap === "number" && isNaN(effectiveCap) === false;
+  if (hasCap === false) {
+    effectiveCap = appState.settings.weightCap || 0.25;
+  }
+
+  // 1. Derive constituent sector list and verify feasibility with checkFeasibility
+  let dummyTickers = [];
+  const hasGatedSurvivors = Array.isArray(appState.gatedSurvivors) === true && appState.gatedSurvivors.length === n;
+  if (hasGatedSurvivors === true) {
+    dummyTickers = appState.gatedSurvivors.slice();
+  } else {
+    dummyTickers = Array.from({ length: n }, (_, i) => String(i));
+  }
+
+  const sectorList = new Array(n).fill("");
+  const hasSectorGroups = sectorGroups !== null && typeof sectorGroups === "object";
+  if (hasSectorGroups === true) {
+    const entries = sectorGroups instanceof Map
+      ? Array.from(sectorGroups.entries())
+      : Object.entries(sectorGroups);
+    for (let s = 0; s < entries.length; s += 1) {
+      const [secName, indices] = entries[s];
+      const hasIndices = Array.isArray(indices) === true;
+      if (hasIndices === true) {
+        for (let j = 0; j < indices.length; j += 1) {
+          const idx = indices[j];
+          const inBounds = idx >= 0 && idx < n;
+          if (inBounds === true) {
+            sectorList[idx] = secName;
+          }
+        }
+      }
+    }
+  } else {
+    for (let i = 0; i < n; i += 1) {
+      sectorList[i] = getConstituentSector(dummyTickers[i]);
+    }
+  }
+
+  const feasResult = checkFeasibility(dummyTickers, sectorList, effectiveCap);
+  const isFeasible = feasResult.feasible === true;
+  if (isFeasible === false) {
+    return {
+      feasible: false,
+      cause: feasResult.cause
+    };
+  }
+
+  // 2. Start at equal weight (1/n each) projected once onto the feasible set
+  let w = new Array(n).fill(1 / n);
+  w = projectFeasible(w, effectiveCap, sectorGroups);
+
+  // 3. Compute L as the Gershgorin bound on the largest eigenvalue of 2 Sigma:
+  // the maximum over rows of the sum of absolute values in that row of 2 Sigma.
+  let L = 0;
+  for (let i = 0; i < n; i += 1) {
+    let rowSum = 0;
+    for (let j = 0; j < n; j += 1) {
+      const absVal = Math.abs(2 * sigma[i][j]);
+      rowSum += absVal;
+    }
+    const isRowGreater = rowSum > L;
+    if (isRowGreater === true) {
+      L = rowSum;
+    }
+  }
+  const safeL = Math.max(L, 1e-12);
+  const stepSize = 1 / safeL;
+
+  // Initial objective f0 = w' Sigma w
+  let fPrevious = 0;
+  for (let i = 0; i < n; i += 1) {
+    let sigW_i = 0;
+    for (let j = 0; j < n; j += 1) {
+      sigW_i += sigma[i][j] * w[j];
+    }
+    fPrevious += w[i] * sigW_i;
+  }
+
+  let iterations = 0;
+  let converged = false;
+
+  // 4. Projected Gradient Descent iterations
+  for (let iter = 1; iter <= 5000; iter += 1) {
+    iterations = iter;
+
+    // Compute gradient: 2 Sigma w
+    const v = new Array(n);
+    for (let i = 0; i < n; i += 1) {
+      let grad_i = 0;
+      for (let j = 0; j < n; j += 1) {
+        grad_i += 2 * sigma[i][j] * w[j];
+      }
+      // Step against gradient with step size 1/L
+      v[i] = w[i] - stepSize * grad_i;
+    }
+
+    // Project result with projectFeasible
+    const wNext = projectFeasible(v, effectiveCap, sectorGroups);
+
+    // Compute objective f = w' Sigma w
+    let fCurrent = 0;
+    for (let i = 0; i < n; i += 1) {
+      let sigW_i = 0;
+      for (let j = 0; j < n; j += 1) {
+        sigW_i += sigma[i][j] * wNext[j];
+      }
+      fCurrent += wNext[i] * sigW_i;
+    }
+
+    // Relative change: |f_k - f_(k-1)| / max(|f_(k-1)|, 1e-18)
+    const fDiff = Math.abs(fCurrent - fPrevious);
+    const denom = Math.max(Math.abs(fPrevious), 1e-18);
+    const relativeChange = fDiff / denom;
+
+    let maxWeightChange = 0;
+    for (let i = 0; i < n; i += 1) {
+      const wDiff = Math.abs(wNext[i] - w[i]);
+      if (wDiff > maxWeightChange) {
+        maxWeightChange = wDiff;
+      }
+    }
+
+    w = wNext;
+    fPrevious = fCurrent;
+
+    const relativeChangeIsBelowTolerance = relativeChange < 1e-8;
+    const weightChangeIsBelowTolerance = maxWeightChange < 1e-6;
+    const isSatisfied = relativeChangeIsBelowTolerance === true && (weightChangeIsBelowTolerance === true || iter >= 25);
+
+    if (isSatisfied === true) {
+      converged = true;
+      break;
+    }
+  }
+
+  // 5. Validate weights with validateWeights
+  const weightsAreValid = validateWeights(w, effectiveCap, sectorGroups);
+  if (weightsAreValid === false) {
+    return {
+      feasible: true,
+      weights: w,
+      iterations,
+      objective: fPrevious,
+      converged: false,
+      message: "The solver, not the input, is at fault: computed weights failed constraint validation."
+    };
+  }
+
+  return {
+    feasible: true,
+    weights: w,
+    iterations,
+    objective: fPrevious,
+    converged
+  };
 }
 
 // Attach helpers and state to window for testing and subsequent prompts
@@ -8046,6 +8228,7 @@ if (hasWindow === true) {
   window.projectSectorHalfSpace = projectSectorHalfSpace;
   window.validateWeights = validateWeights;
   window.projectFeasible = projectFeasible;
+  window.solveMinimumVariance = solveMinimumVariance;
 }
 
 function initializeApp() {
