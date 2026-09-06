@@ -468,8 +468,111 @@
       </div>
       <div class="stage-body" id="stage-body-3">
         <div class="stage-content" id="stage-content-3">
-          <div class="stage-placeholder">
-            <p class="placeholder-text">Stage 3: Indicators controls will be rendered here.</p>
+          <div class="stage-3-container">
+            <!-- Stage 3 Alert message if broken alignment or calculation errors -->
+            <div class="stage-3-alert hidden" id="stage-3-global-alert" role="alert"></div>
+
+            <!-- Stage 3 Summary Metric Bar -->
+            <div class="stage-3-summary-bar" id="stage-3-summary-bar">
+              <div class="stage-3-metric-card">
+                <span class="stage-3-metric-label">Aligned Constituents</span>
+                <span class="stage-3-metric-val" id="s3-metric-constituents">--</span>
+              </div>
+              <div class="stage-3-metric-card">
+                <span class="stage-3-metric-label">Return Sessions (n)</span>
+                <span class="stage-3-metric-val" id="s3-metric-sessions">--</span>
+              </div>
+              <div class="stage-3-metric-card">
+                <span class="stage-3-metric-label">SPY Benchmark Volatility</span>
+                <span class="stage-3-metric-val" id="s3-metric-spy-vol">--</span>
+              </div>
+              <div class="stage-3-metric-card">
+                <span class="stage-3-metric-label">Mean Constituent Volatility</span>
+                <span class="stage-3-metric-val" id="s3-metric-avg-vol">--</span>
+              </div>
+            </div>
+
+            <!-- Stage 3 Navigation Tabs -->
+            <div class="stage-3-tabs" role="tablist">
+              <button type="button" class="stage-3-tab active" id="tab-volatilities" role="tab" aria-selected="true" aria-controls="panel-volatilities">
+                Annualized Volatilities & Returns
+              </button>
+              <button type="button" class="stage-3-tab" id="tab-covariance" role="tab" aria-selected="false" aria-controls="panel-covariance">
+                Covariance Matrix (<span id="cov-matrix-dims">--</span>)
+              </button>
+              <button type="button" class="stage-3-tab" id="tab-slicer" role="tab" aria-selected="false" aria-controls="panel-slicer">
+                Sub-Matrix Slicer
+              </button>
+            </div>
+
+            <!-- Panel 1: Annualized Volatilities & Returns -->
+            <div class="stage-3-panel active" id="panel-volatilities" role="tabpanel" aria-labelledby="tab-volatilities">
+              <div class="table-header-bar">
+                <div class="table-title-group">
+                  <h3 class="table-title">Constituent Volatilities & Daily Return Series</h3>
+                  <span class="table-subtitle">Daily simple returns r_t = (P_t - P_t-1) / P_t-1, sample standard deviation (n-1), and annualized volatility (x sqrt(252))</span>
+                </div>
+                <div class="table-stats-group" id="volatilities-table-stats"></div>
+              </div>
+              <div class="table-scroll-container">
+                <table class="apple-data-table" id="volatilities-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Ticker</th>
+                      <th scope="col">Sector</th>
+                      <th scope="col">Return Sessions</th>
+                      <th scope="col">Daily Std Dev (s)</th>
+                      <th scope="col">Daily Variance (s^2)</th>
+                      <th scope="col">Annualized Vol</th>
+                    </tr>
+                  </thead>
+                  <tbody id="volatilities-tbody">
+                    <tr>
+                      <td colspan="6" class="table-empty-row">Run the pipeline from Stage 1 to compute simple returns and annualized volatility.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Panel 2: Covariance Matrix -->
+            <div class="stage-3-panel" id="panel-covariance" role="tabpanel" aria-labelledby="tab-covariance" hidden>
+              <div class="table-header-bar">
+                <div class="table-title-group">
+                  <h3 class="table-title">Full Covariance Matrix (Aligned Constituents)</h3>
+                  <span class="table-subtitle">Sample covariance across all aligned constituents. SPY is excluded. Diagonal equals daily variance (s^2).</span>
+                </div>
+              </div>
+              <div class="matrix-scroll-container" id="covariance-matrix-container">
+                <p class="table-empty-row">Covariance matrix not computed yet.</p>
+              </div>
+            </div>
+
+            <!-- Panel 3: Sub-Matrix Slicer -->
+            <div class="stage-3-panel" id="panel-slicer" role="tabpanel" aria-labelledby="tab-slicer" hidden>
+              <div class="slicer-card">
+                <div class="slicer-header">
+                  <h3 class="slicer-title">Sub-Matrix Slicer Diagnostic</h3>
+                  <p class="slicer-subtitle">Extracts a sub-matrix using sliceCovariance(tickers) in specified order without mutating the stored matrix.</p>
+                </div>
+                <div class="slicer-controls">
+                  <label for="slicer-input" class="slicer-label">Tickers to slice (comma separated):</label>
+                  <div class="slicer-input-row">
+                    <input type="text" id="slicer-input" class="apple-input-field" placeholder="e.g. MSFT, AAPL" />
+                    <button type="button" class="apple-btn-secondary" id="btn-slice-covariance">Slice Sub-Matrix</button>
+                  </div>
+                  <div class="slicer-presets">
+                    <span>Quick presets:</span>
+                    <button type="button" class="btn-slice-preset" data-tickers="MSFT,AAPL">MSFT, AAPL (2x2)</button>
+                    <button type="button" class="btn-slice-preset" data-tickers="AAPL,MSFT,NVDA">Tech 3 (3x3)</button>
+                    <button type="button" class="btn-slice-preset" data-tickers="JNJ,PFE,UNH">Health 3 (3x3)</button>
+                  </div>
+                </div>
+                <div class="slicer-results" id="slicer-results">
+                  <p class="slicer-placeholder">Enter tickers and click "Slice Sub-Matrix" to view extracted sub-matrix.</p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

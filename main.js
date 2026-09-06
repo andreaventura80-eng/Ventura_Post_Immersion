@@ -1998,9 +1998,12 @@ export function alignAndCompleteStage2() {
   updateAlignmentSummaryCard();
   renderRawPricesTable();
 
-  // Set stage 2 to done and stage 3 to running
+  // Compute returns, annualized volatility, and covariance matrix for Stage 3
+  computeReturnsAndCovariance();
+
+  // Set stage 2 to done and stage 3 to done
   setStageStatus(2, "done");
-  setStageStatus(3, "running");
+  setStageStatus(3, "done");
 
   const hasDocument = typeof document !== "undefined";
   if (hasDocument === true) {
@@ -2027,6 +2030,7 @@ export async function runPriceFetchAndAlignment(isRefresh = false) {
     appState.priceCache = {};
     appState.alignedData = null;
     appState.priceStatus = {};
+    appState.indicatorSeries = null;
   }
 
   showStage2Alert("");
@@ -2230,6 +2234,666 @@ export function setupStage2() {
   updateQuotaUI();
   updateAlignmentSummaryCard();
   renderRawPricesTable();
+}
+
+/**
+ * Computes the daily simple return series r_t = (P_t - P_{t-1}) / P_{t-1}.
+ * Starts from the second session onward (length = prices.length - 1).
+ *
+ * @param {number[]} prices
+ * @returns {number[]}
+ */
+export function computeDailyReturns(prices) {
+  const isArray = Array.isArray(prices) === true;
+  if (isArray === false) {
+    return [];
+  }
+  const hasSufficientSessions = prices.length >= 2;
+  if (hasSufficientSessions === false) {
+    return [];
+  }
+
+  const returns = [];
+  for (let i = 1; i < prices.length; i += 1) {
+    const prevRaw = prices[i - 1];
+    const currRaw = prices[i];
+    const prev = typeof prevRaw === "number" ? prevRaw : parseFloat(prevRaw);
+    const curr = typeof currRaw === "number" ? currRaw : parseFloat(currRaw);
+    const isValid = isNaN(prev) === false && isNaN(curr) === false && prev !== 0;
+    if (isValid === true) {
+      const r = (curr - prev) / prev;
+      returns.push(r);
+    } else {
+      returns.push(0);
+    }
+  }
+  return returns;
+}
+
+/**
+ * Computes the sample mean of a numeric series.
+ *
+ * @param {number[]} series
+ * @returns {number}
+ */
+export function computeSampleMean(series) {
+  const isArray = Array.isArray(series) === true;
+  if (isArray === false) {
+    return 0;
+  }
+  const hasItems = series.length > 0;
+  if (hasItems === false) {
+    return 0;
+  }
+  let sum = 0;
+  for (let i = 0; i < series.length; i += 1) {
+    sum += series[i];
+  }
+  return sum / series.length;
+}
+
+/**
+ * Computes the sample standard deviation (divide by n - 1) of daily simple returns.
+ *
+ * @param {number[]} returns
+ * @returns {number}
+ */
+export function computeDailyStd(returns) {
+  const isArray = Array.isArray(returns) === true;
+  if (isArray === false) {
+    return 0;
+  }
+  const hasDegreesOfFreedom = returns.length >= 2;
+  if (hasDegreesOfFreedom === false) {
+    return 0;
+  }
+  const mean = computeSampleMean(returns);
+  let sumSqDiff = 0;
+  for (let i = 0; i < returns.length; i += 1) {
+    const diff = returns[i] - mean;
+    sumSqDiff += diff * diff;
+  }
+  const variance = sumSqDiff / (returns.length - 1);
+  return Math.sqrt(variance);
+}
+
+/**
+ * Computes annualized volatility by multiplying daily standard deviation by sqrt(252).
+ *
+ * @param {number} dailyStd
+ * @returns {number}
+ */
+export function computeAnnualizedVol(dailyStd) {
+  const isValidNumber = typeof dailyStd === "number" && isNaN(dailyStd) === false;
+  if (isValidNumber === false) {
+    return 0;
+  }
+  return dailyStd * Math.sqrt(252);
+}
+
+/**
+ * Computes the sample covariance (divide by n - 1) of two aligned return series.
+ *
+ * @param {number[]} seriesA
+ * @param {number[]} seriesB
+ * @returns {number}
+ */
+export function computeSampleCovariance(seriesA, seriesB) {
+  const isArrayA = Array.isArray(seriesA) === true;
+  const isArrayB = Array.isArray(seriesB) === true;
+  if (isArrayA === false || isArrayB === false) {
+    throw new Error("Both inputs to computeSampleCovariance must be arrays.");
+  }
+  const lengthsAreEqual = seriesA.length === seriesB.length;
+  if (lengthsAreEqual === false) {
+    throw new Error(`Return series lengths do not match: ${seriesA.length} vs ${seriesB.length}. Broken alignment upstream.`);
+  }
+  const n = seriesA.length;
+  const hasDegreesOfFreedom = n >= 2;
+  if (hasDegreesOfFreedom === false) {
+    return 0;
+  }
+
+  const meanA = computeSampleMean(seriesA);
+  const meanB = computeSampleMean(seriesB);
+  let sumCrossDiff = 0;
+  for (let i = 0; i < n; i += 1) {
+    sumCrossDiff += (seriesA[i] - meanA) * (seriesB[i] - meanB);
+  }
+  return sumCrossDiff / (n - 1);
+}
+
+/**
+ * Extracts a sub-matrix from the stored covariance matrix for a given list of tickers
+ * in the exact specified order, without mutating the stored matrix.
+ *
+ * @param {string[]} tickers
+ * @returns {number[][]}
+ */
+export function sliceCovariance(tickers) {
+  const isArray = Array.isArray(tickers) === true;
+  if (isArray === false) {
+    throw new Error("sliceCovariance requires an array of ticker strings.");
+  }
+  const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object" && Array.isArray(appState.indicatorSeries.covarianceMatrix) === true;
+  if (hasIndicators === false) {
+    throw new Error("Covariance matrix has not been computed yet.");
+  }
+
+  const covMatrix = appState.indicatorSeries.covarianceMatrix;
+  const covTickers = appState.indicatorSeries.covarianceTickers;
+  const tickerIndexMap = new Map();
+  for (let i = 0; i < covTickers.length; i += 1) {
+    tickerIndexMap.set(covTickers[i], i);
+  }
+
+  const n = tickers.length;
+  const subMatrix = [];
+  for (let i = 0; i < n; i += 1) {
+    const rowTicker = tickers[i];
+    const origRowIdx = tickerIndexMap.get(rowTicker);
+    const hasRowIdx = origRowIdx !== undefined;
+    if (hasRowIdx === false) {
+      throw new Error(`Ticker ${rowTicker} not found in covariance matrix.`);
+    }
+
+    const row = [];
+    for (let j = 0; j < n; j += 1) {
+      const colTicker = tickers[j];
+      const origColIdx = tickerIndexMap.get(colTicker);
+      const hasColIdx = origColIdx !== undefined;
+      if (hasColIdx === false) {
+        throw new Error(`Ticker ${colTicker} not found in covariance matrix.`);
+      }
+      row.push(covMatrix[origRowIdx][origColIdx]);
+    }
+    subMatrix.push(row);
+  }
+
+  return subMatrix;
+}
+
+/**
+ * Shows or hides the Stage 3 global alert banner.
+ *
+ * @param {string} message
+ * @param {string} [type]
+ */
+export function showStage3Alert(message, type = "error") {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const alertEl = document.getElementById("stage-3-global-alert");
+  if (alertEl === null) {
+    return;
+  }
+  const hasMsg = typeof message === "string" && message.trim().length > 0;
+  if (hasMsg === true) {
+    alertEl.textContent = message;
+    alertEl.className = `stage-3-alert alert-${type}`;
+    alertEl.classList.remove("hidden");
+  } else {
+    alertEl.textContent = "";
+    alertEl.className = "stage-3-alert hidden";
+  }
+}
+
+/**
+ * Computes daily simple returns, daily standard deviation, annualized volatility,
+ * and the sample covariance matrix across all aligned constituent tickers.
+ * SPY returns and volatility are computed on its own dates and kept out of the matrix.
+ */
+export function computeReturnsAndCovariance() {
+  const aligned = appState.alignedData;
+  const hasAligned = aligned !== null && typeof aligned === "object" && Array.isArray(aligned.dates) === true;
+  if (hasAligned === false) {
+    showStage3Alert("Cannot compute returns: alignedData is missing or empty.", "error");
+    throw new Error("Cannot compute returns: alignedData is missing or empty.");
+  }
+
+  const constituentTickers = Object.keys(aligned.prices);
+  const hasConstituents = constituentTickers.length > 0;
+  if (hasConstituents === false) {
+    showStage3Alert("Cannot compute returns: no aligned constituent prices available.", "error");
+    throw new Error("Cannot compute returns: no aligned constituent prices available.");
+  }
+
+  const expectedLength = aligned.dates.length - 1;
+  const returnsByTicker = {};
+  const dailyStdByTicker = {};
+  const annualizedVolByTicker = {};
+  const perTickerData = {};
+
+  // Compute returns and volatilities for each constituent
+  for (let i = 0; i < constituentTickers.length; i += 1) {
+    const ticker = constituentTickers[i];
+    const prices = aligned.prices[ticker];
+    const retSeries = computeDailyReturns(prices);
+
+    // Guardrail: check length against expected aligned sessions
+    const isLengthValid = retSeries.length === expectedLength;
+    if (isLengthValid === false) {
+      const msg = `Constituent ${ticker} return series length (${retSeries.length}) differs from expected (${expectedLength}). Broken alignment upstream.`;
+      showStage3Alert(msg, "error");
+      throw new Error(msg);
+    }
+
+    const dStd = computeDailyStd(retSeries);
+    const annVol = computeAnnualizedVol(dStd);
+
+    returnsByTicker[ticker] = retSeries;
+    dailyStdByTicker[ticker] = dStd;
+    annualizedVolByTicker[ticker] = annVol;
+    perTickerData[ticker] = {
+      returns: [...retSeries],
+      dailyStd: dStd,
+      annualizedVol: annVol
+    };
+  }
+
+  // Guardrail: verify that all constituent return series have identical length
+  for (let i = 1; i < constituentTickers.length; i += 1) {
+    const tA = constituentTickers[0];
+    const tB = constituentTickers[i];
+    const lenA = returnsByTicker[tA].length;
+    const lenB = returnsByTicker[tB].length;
+    const lengthsMatch = lenA === lenB;
+    if (lengthsMatch === false) {
+      const msg = `Return series length mismatch between ${tA} (${lenA}) and ${tB} (${lenB}). Broken alignment upstream.`;
+      showStage3Alert(msg, "error");
+      throw new Error(msg);
+    }
+  }
+
+  // Compute SPY return series on its own dates (kept out of the covariance matrix)
+  let spyData = null;
+  const hasSpy = aligned.spy !== null && typeof aligned.spy === "object" && Array.isArray(aligned.spy.prices) === true;
+  if (hasSpy === true) {
+    const spyPrices = aligned.spy.prices;
+    const spyReturns = computeDailyReturns(spyPrices);
+    const spyStd = computeDailyStd(spyReturns);
+    const spyAnnVol = computeAnnualizedVol(spyStd);
+    const spyReturnDates = aligned.spy.dates.slice(1);
+    spyData = {
+      dates: spyReturnDates,
+      returns: spyReturns,
+      dailyStd: spyStd,
+      annualizedVol: spyAnnVol
+    };
+  }
+
+  // Covariance matrix: sample covariance of daily simple returns across all aligned constituents
+  // SPY is kept out of the matrix
+  const numTickers = constituentTickers.length;
+  const covarianceMatrix = [];
+  for (let i = 0; i < numTickers; i += 1) {
+    const row = [];
+    const tickerA = constituentTickers[i];
+    const seriesA = returnsByTicker[tickerA];
+    for (let j = 0; j < numTickers; j += 1) {
+      const tickerB = constituentTickers[j];
+      if (i === j) {
+        const covSelf = computeSampleCovariance(seriesA, seriesA);
+        row.push(covSelf);
+      } else if (j < i) {
+        // Sample covariance is symmetric: Cov(A, B) = Cov(B, A)
+        row.push(covarianceMatrix[j][i]);
+      } else {
+        const seriesB = returnsByTicker[tickerB];
+        const cov = computeSampleCovariance(seriesA, seriesB);
+        row.push(cov);
+      }
+    }
+    covarianceMatrix.push(row);
+  }
+
+  const returnDates = aligned.dates.slice(1);
+
+  // Preserve existing indicatorSeries fields if any exist
+  const existingIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object" ? appState.indicatorSeries : {};
+
+  appState.indicatorSeries = {
+    ...existingIndicators,
+    dates: returnDates,
+    tickers: [...constituentTickers],
+    returns: returnsByTicker,
+    dailyStd: dailyStdByTicker,
+    annualizedVol: annualizedVolByTicker,
+    perTicker: perTickerData,
+    covarianceMatrix: covarianceMatrix,
+    covarianceTickers: [...constituentTickers],
+    spy: spyData
+  };
+
+  showStage3Alert("");
+  renderIndicatorsUI();
+}
+
+/**
+ * Updates summary metrics in Stage 3 banner.
+ */
+export function updateStage3SummaryMetrics() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const constituentsEl = document.getElementById("s3-metric-constituents");
+  const sessionsEl = document.getElementById("s3-metric-sessions");
+  const spyVolEl = document.getElementById("s3-metric-spy-vol");
+  const avgVolEl = document.getElementById("s3-metric-avg-vol");
+
+  const ind = appState.indicatorSeries;
+  const hasData = ind !== null && Array.isArray(ind.tickers) === true && ind.tickers.length > 0;
+  if (hasData === false) {
+    if (constituentsEl !== null) constituentsEl.textContent = "--";
+    if (sessionsEl !== null) sessionsEl.textContent = "--";
+    if (spyVolEl !== null) spyVolEl.textContent = "--";
+    if (avgVolEl !== null) avgVolEl.textContent = "--";
+    return;
+  }
+
+  if (constituentsEl !== null) {
+    constituentsEl.textContent = `${ind.tickers.length} tickers`;
+  }
+  if (sessionsEl !== null) {
+    const returnCount = ind.dates ? ind.dates.length : (ind.returns[ind.tickers[0]] ? ind.returns[ind.tickers[0]].length : 0);
+    sessionsEl.textContent = `${returnCount} days`;
+  }
+  if (spyVolEl !== null) {
+    if (ind.spy !== null && ind.spy !== undefined && ind.spy.annualizedVol !== undefined) {
+      spyVolEl.textContent = `${(ind.spy.annualizedVol * 100).toFixed(2)}%`;
+    } else {
+      spyVolEl.textContent = "--";
+    }
+  }
+  if (avgVolEl !== null) {
+    let sumVol = 0;
+    for (let i = 0; i < ind.tickers.length; i += 1) {
+      sumVol += ind.annualizedVol[ind.tickers[i]] || 0;
+    }
+    const meanVol = sumVol / ind.tickers.length;
+    avgVolEl.textContent = `${(meanVol * 100).toFixed(2)}%`;
+  }
+}
+
+/**
+ * Renders the volatilities table in Stage 3.
+ */
+export function renderVolatilitiesTable() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const tbody = document.getElementById("volatilities-tbody");
+  const statsEl = document.getElementById("volatilities-table-stats");
+  if (tbody === null) {
+    return;
+  }
+
+  const ind = appState.indicatorSeries;
+  const hasData = ind !== null && Array.isArray(ind.tickers) === true && ind.tickers.length > 0;
+  if (hasData === false) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty-row">Run the pipeline from Stage 1 to compute simple returns and annualized volatility.</td></tr>`;
+    if (statsEl !== null) {
+      statsEl.textContent = "";
+    }
+    return;
+  }
+
+  const tickers = ind.tickers;
+  const universe = appState.universe || DEFAULT_UNIVERSE;
+  const sectorMap = new Map();
+  for (let i = 0; i < universe.length; i += 1) {
+    sectorMap.set(universe[i].ticker, universe[i].sector);
+  }
+
+  let html = "";
+  for (let i = 0; i < tickers.length; i += 1) {
+    const ticker = tickers[i];
+    const sector = sectorMap.get(ticker) || "Equity";
+    const retSeries = ind.returns[ticker] || [];
+    const dStd = ind.dailyStd[ticker];
+    const annVol = ind.annualizedVol[ticker];
+    const variance = dStd !== undefined ? dStd * dStd : 0;
+
+    const dStdText = dStd !== undefined ? `${(dStd * 100).toFixed(2)}% (${dStd.toFixed(6)})` : "--";
+    const varianceText = variance !== undefined ? variance.toFixed(6) : "--";
+    const annVolText = annVol !== undefined ? `${(annVol * 100).toFixed(2)}%` : "--";
+
+    html += `
+      <tr>
+        <td>
+          <div class="ticker-cell-group">
+            <span class="ticker-code">${ticker}</span>
+          </div>
+        </td>
+        <td><span class="sector-text">${sector}</span></td>
+        <td><span class="sessions-count">${retSeries.length} sessions</span></td>
+        <td><span class="price-mono">${dStdText}</span></td>
+        <td><span class="price-mono">${varianceText}</span></td>
+        <td><span class="price-mono" style="font-weight: 700; color: var(--apple-text-primary);">${annVolText}</span></td>
+      </tr>
+    `;
+  }
+
+  // Also include SPY if available
+  if (ind.spy !== null && ind.spy !== undefined && ind.spy.returns !== undefined) {
+    const spyReturns = ind.spy.returns;
+    const spyStd = ind.spy.dailyStd;
+    const spyAnnVol = ind.spy.annualizedVol;
+    const spyVar = spyStd * spyStd;
+
+    html += `
+      <tr style="background: #fafbfc; border-top: 2px solid var(--apple-border);">
+        <td>
+          <div class="ticker-cell-group">
+            <span class="ticker-code">SPY</span>
+            <span class="badge-benchmark">Benchmark</span>
+          </div>
+        </td>
+        <td><span class="sector-text">Benchmark</span></td>
+        <td><span class="sessions-count">${spyReturns.length} sessions</span></td>
+        <td><span class="price-mono">${(spyStd * 100).toFixed(2)}% (${spyStd.toFixed(6)})</span></td>
+        <td><span class="price-mono">${spyVar.toFixed(6)}</span></td>
+        <td><span class="price-mono" style="font-weight: 700; color: var(--apple-blue);">${(spyAnnVol * 100).toFixed(2)}%</span></td>
+      </tr>
+    `;
+  }
+
+  tbody.innerHTML = html;
+
+  if (statsEl !== null) {
+    statsEl.textContent = `${tickers.length} constituents + 1 benchmark`;
+  }
+}
+
+/**
+ * Renders the full covariance matrix table.
+ */
+export function renderCovarianceMatrixTable() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+  const container = document.getElementById("covariance-matrix-container");
+  const dimsEl = document.getElementById("cov-matrix-dims");
+  if (container === null) {
+    return;
+  }
+
+  const ind = appState.indicatorSeries;
+  const hasCov = ind !== null && Array.isArray(ind.covarianceMatrix) === true && ind.covarianceMatrix.length > 0;
+  if (hasCov === false) {
+    container.innerHTML = `<p class="table-empty-row">Covariance matrix not computed yet.</p>`;
+    if (dimsEl !== null) {
+      dimsEl.textContent = "--";
+    }
+    return;
+  }
+
+  const matrix = ind.covarianceMatrix;
+  const tickers = ind.covarianceTickers;
+  const n = tickers.length;
+  if (dimsEl !== null) {
+    dimsEl.textContent = `${n} x ${n}`;
+  }
+
+  let html = `<table class="matrix-table"><thead><tr><th class="sticky-col">Ticker</th>`;
+  for (let j = 0; j < n; j += 1) {
+    html += `<th>${tickers[j]}</th>`;
+  }
+  html += `</tr></thead><tbody>`;
+
+  for (let i = 0; i < n; i += 1) {
+    const rowTicker = tickers[i];
+    html += `<tr><td class="sticky-col">${rowTicker}</td>`;
+    for (let j = 0; j < n; j += 1) {
+      const val = matrix[i][j];
+      const isDiag = i === j;
+      const cellClass = isDiag === true ? "diag-cell" : "";
+      const formattedVal = val.toFixed(6);
+      html += `<td class="${cellClass}" title="${rowTicker} vs ${tickers[j]}: ${val}">${formattedVal}</td>`;
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+
+  container.innerHTML = html;
+}
+
+/**
+ * Handles slicing the sub-matrix on user button click.
+ */
+export function handleSliceDiagnostic() {
+  const inputEl = document.getElementById("slicer-input");
+  const resultsEl = document.getElementById("slicer-results");
+  if (inputEl === null || resultsEl === null) {
+    return;
+  }
+
+  const rawText = inputEl.value || "";
+  const tickers = rawText
+    .split(",")
+    .map((t) => t.trim().toUpperCase())
+    .filter((t) => t.length > 0);
+
+  const hasTickers = tickers.length > 0;
+  if (hasTickers === false) {
+    resultsEl.innerHTML = `<p class="slicer-placeholder" style="color: #c91818;">Please enter at least one ticker symbol.</p>`;
+    return;
+  }
+
+  try {
+    const subMatrix = sliceCovariance(tickers);
+    let html = `
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px;">
+        <span style="font-size: 13px; font-weight: 600; color: var(--apple-text-primary);">
+          Extracted Sub-Matrix (${tickers.length} x ${tickers.length})
+        </span>
+        <span style="font-size: 11.5px; color: #2e7d32; font-weight: 500;">
+          Stored matrix unmutated
+        </span>
+      </div>
+      <div class="matrix-scroll-container" style="max-height: 250px;">
+        <table class="matrix-table">
+          <thead>
+            <tr>
+              <th class="sticky-col">Ticker</th>
+    `;
+    for (let j = 0; j < tickers.length; j += 1) {
+      html += `<th>${tickers[j]}</th>`;
+    }
+    html += `</tr></thead><tbody>`;
+
+    for (let i = 0; i < tickers.length; i += 1) {
+      html += `<tr><td class="sticky-col">${tickers[i]}</td>`;
+      for (let j = 0; j < tickers.length; j += 1) {
+        const val = subMatrix[i][j];
+        const isDiag = i === j;
+        const cellClass = isDiag === true ? "diag-cell" : "";
+        html += `<td class="${cellClass}">${val.toFixed(6)}</td>`;
+      }
+      html += `</tr>`;
+    }
+    html += `</tbody></table></div>`;
+    resultsEl.innerHTML = html;
+  } catch (err) {
+    resultsEl.innerHTML = `<p class="slicer-placeholder" style="color: #c91818;">Error: ${err.message}</p>`;
+  }
+}
+
+/**
+ * Renders all components in Stage 3 indicators.
+ */
+export function renderIndicatorsUI() {
+  updateStage3SummaryMetrics();
+  renderVolatilitiesTable();
+  renderCovarianceMatrixTable();
+}
+
+/**
+ * Sets up Stage 3 event listeners, tabs, and slicer interactions.
+ */
+export function setupStage3() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  // Tabs setup
+  const tabs = [
+    { btnId: "tab-volatilities", panelId: "panel-volatilities" },
+    { btnId: "tab-covariance", panelId: "panel-covariance" },
+    { btnId: "tab-slicer", panelId: "panel-slicer" }
+  ];
+
+  tabs.forEach((tab) => {
+    const btn = document.getElementById(tab.btnId);
+    if (btn !== null) {
+      btn.addEventListener("click", () => {
+        tabs.forEach((t) => {
+          const b = document.getElementById(t.btnId);
+          const p = document.getElementById(t.panelId);
+          if (b !== null && p !== null) {
+            const isActive = t.btnId === tab.btnId;
+            if (isActive === true) {
+              b.classList.add("active");
+              b.setAttribute("aria-selected", "true");
+              p.classList.add("active");
+              p.removeAttribute("hidden");
+            } else {
+              b.classList.remove("active");
+              b.setAttribute("aria-selected", "false");
+              p.classList.remove("active");
+              p.setAttribute("hidden", "true");
+            }
+          }
+        });
+      });
+    }
+  });
+
+  // Slice button
+  const sliceBtn = document.getElementById("btn-slice-covariance");
+  if (sliceBtn !== null) {
+    sliceBtn.addEventListener("click", handleSliceDiagnostic);
+  }
+
+  // Preset buttons
+  const presetBtns = document.querySelectorAll(".btn-slice-preset");
+  presetBtns.forEach((pBtn) => {
+    pBtn.addEventListener("click", () => {
+      const tickersAttr = pBtn.getAttribute("data-tickers");
+      const inputEl = document.getElementById("slicer-input");
+      if (inputEl !== null && tickersAttr !== null) {
+        inputEl.value = tickersAttr;
+        handleSliceDiagnostic();
+      }
+    });
+  });
+
+  renderIndicatorsUI();
 }
 
 /**
@@ -2578,6 +3242,20 @@ if (hasWindow === true) {
   window.alignAndCompleteStage2 = alignAndCompleteStage2;
   window.runPriceFetchAndAlignment = runPriceFetchAndAlignment;
   window.setupStage2 = setupStage2;
+  window.computeDailyReturns = computeDailyReturns;
+  window.computeSampleMean = computeSampleMean;
+  window.computeDailyStd = computeDailyStd;
+  window.computeAnnualizedVol = computeAnnualizedVol;
+  window.computeSampleCovariance = computeSampleCovariance;
+  window.sliceCovariance = sliceCovariance;
+  window.showStage3Alert = showStage3Alert;
+  window.computeReturnsAndCovariance = computeReturnsAndCovariance;
+  window.updateStage3SummaryMetrics = updateStage3SummaryMetrics;
+  window.renderVolatilitiesTable = renderVolatilitiesTable;
+  window.renderCovarianceMatrixTable = renderCovarianceMatrixTable;
+  window.handleSliceDiagnostic = handleSliceDiagnostic;
+  window.renderIndicatorsUI = renderIndicatorsUI;
+  window.setupStage3 = setupStage3;
 }
 
 function initializeApp() {
@@ -2587,6 +3265,7 @@ function initializeApp() {
   renderUniverseUI();
   setupSettingsPanel();
   setupStage2();
+  setupStage3();
 }
 
 const hasDocument = typeof document !== "undefined";
