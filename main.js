@@ -106,6 +106,7 @@ export const appState = {
   indicatorSeries: null,
   screenResult: null,
   alerts: [],
+  globalBanners: [],
   profiles: null,
   labels: null,
   rawLabelResponse: null,
@@ -391,13 +392,16 @@ export function addGlobalBanner(id, message, level = "warning") {
     return;
   }
 
-  // Update in appState alerts
-  const existingAlertIndex = appState.alerts.findIndex((a) => a.id === id);
+  // Update in appState globalBanners
+  if (Array.isArray(appState.globalBanners) === false) {
+    appState.globalBanners = [];
+  }
+  const existingAlertIndex = appState.globalBanners.findIndex((a) => a.id === id);
   const hasExistingAlert = existingAlertIndex >= 0;
   if (hasExistingAlert === true) {
-    appState.alerts[existingAlertIndex] = { id, message, level };
+    appState.globalBanners[existingAlertIndex] = { id, message, level };
   } else {
-    appState.alerts.push({ id, message, level });
+    appState.globalBanners.push({ id, message, level });
   }
 
   let bannerElement = document.getElementById(`banner-${id}`);
@@ -447,12 +451,14 @@ export function addGlobalBanner(id, message, level = "warning") {
  * @param {string} id - Unique identifier for the banner
  */
 export function removeGlobalBanner(id) {
-  const alertIndex = appState.alerts.findIndex((a) => a.id === id);
-  const hasAlert = alertIndex >= 0;
-  if (hasAlert === true) {
-    appState.alerts.splice(alertIndex, 1);
-  } else {
-    // Alert not found in state
+  if (Array.isArray(appState.globalBanners) === true) {
+    const alertIndex = appState.globalBanners.findIndex((a) => a.id === id);
+    const hasAlert = alertIndex >= 0;
+    if (hasAlert === true) {
+      appState.globalBanners.splice(alertIndex, 1);
+    } else {
+      // Alert not found in state
+    }
   }
 
   const bannerElement = document.getElementById(`banner-${id}`);
@@ -468,7 +474,7 @@ export function removeGlobalBanner(id) {
  * Clears all global banners.
  */
 export function clearGlobalBanners() {
-  appState.alerts = [];
+  appState.globalBanners = [];
   const bannersContainer = document.getElementById("global-banners");
   const hasContainer = bannersContainer !== null;
   if (hasContainer === true) {
@@ -2044,6 +2050,17 @@ export function alignAndCompleteStage2() {
   // Run Stage 4 technical screen
   runStage4Screen();
 
+  // Run Stage 5 text gate if survivors exist
+  const hasSurvivors = appState.screenResult !== null &&
+    Array.isArray(appState.screenResult.survivors) === true &&
+    appState.screenResult.survivors.length > 0;
+
+  if (hasSurvivors === true) {
+    runStage5Pipeline(false).catch((err) => {
+      console.warn("Stage 5 run failed:", err);
+    });
+  }
+
   const hasDocument = typeof document !== "undefined";
   if (hasDocument === true) {
     const stageBody3 = document.getElementById("stage-body-3");
@@ -2057,6 +2074,14 @@ export function alignAndCompleteStage2() {
     if (stageBody4 !== null && stageHeader4 !== null) {
       stageBody4.classList.remove("collapsed");
       stageHeader4.setAttribute("aria-expanded", "true");
+    }
+    if (hasSurvivors === true) {
+      const stageBody5 = document.getElementById("stage-body-5");
+      const stageHeader5 = document.getElementById("stage-header-5");
+      if (stageBody5 !== null && stageHeader5 !== null) {
+        stageBody5.classList.remove("collapsed");
+        stageHeader5.setAttribute("aria-expanded", "true");
+      }
     }
     const stageSection3 = document.getElementById("stage-section-3");
     if (stageSection3 !== null) {
@@ -5366,6 +5391,847 @@ export function setupStage4() {
   renderStage4UI();
 }
 
+// ============================================================================
+// STAGE 5: TEXT GATE (RISKLINE MACRO ALERTS & TWELVE DATA BUSINESS SUMMARIES)
+// ============================================================================
+
+/**
+ * Escapes special HTML characters to prevent XSS and rendering issues.
+ * @param {string} str - Raw string
+ * @returns {string} Escaped HTML string
+ */
+export function escapeHtml(str) {
+  const isString = typeof str === "string";
+  if (isString === false) {
+    return "";
+  }
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+export const DEFAULT_RISKLINE_URL = "https://api.riskline.com/alerts/latest.json";
+export let risklineAlertsUrl = DEFAULT_RISKLINE_URL;
+
+/**
+ * Sets the URL used for fetching Riskline macro alerts. Useful for testing.
+ * @param {string} url - Target URL
+ */
+export function setRisklineAlertsUrl(url) {
+  risklineAlertsUrl = url;
+}
+
+/**
+ * Custom sentence splitter that does not break on common abbreviations
+ * such as "Inc.", "Corp.", "Ltd.", "Co.", "U.S.", "e.g.", "vs.", or on decimals inside a sentence.
+ *
+ * @param {string} text - Raw input text
+ * @returns {Array<string>} Array of clean sentences
+ */
+export function splitSentences(text) {
+  const isString = typeof text === "string";
+  if (isString === false) {
+    return [];
+  }
+
+  const trimmed = text.trim();
+  const isEmpty = trimmed.length === 0;
+  if (isEmpty === true) {
+    return [];
+  }
+
+  // Protect decimals (e.g. 14.5%, $2.5B, 0.05) using zero-width space
+  let str = trimmed.replace(/(\d)\.(\d)/g, "$1\u200B$2");
+
+  // Protect multi-dot common abbreviations
+  str = str.replace(/\bU\.S\./g, "U\u200CS\u200C");
+  str = str.replace(/\be\.g\./gi, "e\u200Cg\u200C");
+  str = str.replace(/\bi\.e\./gi, "i\u200Ce\u200C");
+
+  // Protect common single-dot abbreviations
+  str = str.replace(
+    /\b(Inc|Corp|Ltd|Co|vs|etc|approx|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|St|Dr|Mr|Mrs|Ms|Jr|Sr|No)\./gi,
+    "$1\u200C"
+  );
+
+  // Protect single uppercase initials like "J. F. Kennedy"
+  str = str.replace(/\b([A-Z])\.\s+/g, "$1\u200C ");
+
+  // Match sentences ending in ., !, or ? followed by whitespace or string end
+  const rawSentences = str.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) || [str];
+
+  const sentences = rawSentences.map((s) => {
+    return s
+      .replace(/\u200B/g, ".")
+      .replace(/\u200C/g, ".")
+      .trim();
+  }).filter((s) => {
+    return s.length > 0;
+  });
+
+  return sentences;
+}
+
+/**
+ * Truncates text to its first three sentences preserving abbreviations and decimals.
+ *
+ * @param {string} text - Input text
+ * @returns {string} Truncated three-sentence summary
+ */
+export function truncateToThreeSentences(text) {
+  const isString = typeof text === "string";
+  if (isString === false) {
+    return "";
+  }
+
+  const sentences = splitSentences(text);
+  const isWithinLimit = sentences.length <= 3;
+  if (isWithinLimit === true) {
+    return sentences.join(" ");
+  }
+
+  return sentences.slice(0, 3).join(" ");
+}
+
+/**
+ * Fetches the unauthenticated Riskline macro risk feed.
+ * 10-second timeout, 1 retry.
+ * Keeps only title, region, and category for each alert and at most the 50 most recent.
+ *
+ * @returns {Promise<Array<{title: string, region: string, category: string}>>}
+ */
+export async function fetchRisklineAlerts() {
+  const response = await fetchWithTimeoutAndRetry(risklineAlertsUrl, 10000);
+  const isOk = response.ok === true;
+  if (isOk === false) {
+    throw new Error(`Riskline feed responded with status ${response.status}`);
+  }
+
+  const data = await response.json();
+  let rawAlerts = [];
+  if (Array.isArray(data) === true) {
+    rawAlerts = data;
+  } else if (data !== null && typeof data === "object") {
+    if (Array.isArray(data.alerts) === true) {
+      rawAlerts = data.alerts;
+    } else if (Array.isArray(data.data) === true) {
+      rawAlerts = data.data;
+    }
+  }
+
+  const cleanAlerts = [];
+  const limit = Math.min(rawAlerts.length, 50);
+  for (let i = 0; i < limit; i += 1) {
+    const item = rawAlerts[i];
+    if (item !== null && typeof item === "object") {
+      const title = typeof item.title === "string" ? item.title.trim() : (typeof item.headline === "string" ? item.headline.trim() : "Macro Alert");
+      const region = typeof item.region === "string" ? item.region.trim() : (typeof item.country === "string" ? item.country.trim() : "Global");
+      const category = typeof item.category === "string" ? item.category.trim() : (typeof item.type === "string" ? item.type.trim() : "Geopolitical");
+      cleanAlerts.push({ title, region, category });
+    }
+  }
+
+  appState.alerts = cleanAlerts;
+  return cleanAlerts;
+}
+
+// Promise chain to serialize quota budget acquisitions
+let profileQuotaQueue = Promise.resolve();
+let profileCountdownIntervalId = null;
+
+/**
+ * Serializes and checks quota availability for fetching a company profile (10 credits).
+ * If credits left are below 10, waits for the wall-clock minute to advance.
+ *
+ * @param {string} ticker - Ticker requesting profile quota
+ * @param {Function} onCountdownTick - Callback for countdown seconds
+ * @returns {Promise<void>}
+ */
+export async function acquireProfileQuota(ticker, onCountdownTick) {
+  return new Promise((resolve) => {
+    profileQuotaQueue = profileQuotaQueue.then(async () => {
+      // Check wall-clock minute advancement
+      const currentMinute = Math.floor(Date.now() / 60000);
+      const hasMinuteRolled = currentMinute > quotaState.lastResetMinute;
+      if (hasMinuteRolled === true) {
+        quotaState.lastResetMinute = currentMinute;
+        quotaState.creditsLeft = appState.settings.creditsPerMinute || 144;
+        quotaState.isEstimated = true;
+      }
+
+      if (quotaState.creditsLeft === null) {
+        quotaState.creditsLeft = appState.settings.creditsPerMinute || 144;
+        quotaState.isEstimated = true;
+      }
+
+      const quotaAllowsRequest = quotaState.creditsLeft >= 10;
+      if (quotaAllowsRequest === true) {
+        // Sufficient credits available immediately
+        quotaState.creditsLeft -= 10;
+        updateQuotaUI();
+        resolve();
+        return;
+      }
+
+      // Insufficient credits, must wait for next clock minute
+      quotaState.waitingForQuota = true;
+      updateQuotaUI();
+
+      await new Promise((waitResolve) => {
+        const checkWallClockMinute = () => {
+          const now = Date.now();
+          const msRemaining = 60000 - (now % 60000);
+          const secsRemaining = Math.max(1, Math.ceil(msRemaining / 1000));
+          quotaState.countdownSeconds = secsRemaining;
+
+          if (typeof onCountdownTick === "function") {
+            onCountdownTick(ticker, secsRemaining);
+          }
+          updateQuotaUI();
+
+          const nowMinute = Math.floor(now / 60000);
+          const hasAdvanced = nowMinute > quotaState.lastResetMinute;
+          if (hasAdvanced === true) {
+            quotaState.lastResetMinute = nowMinute;
+            quotaState.creditsLeft = appState.settings.creditsPerMinute || 144;
+            quotaState.isEstimated = true;
+            quotaState.waitingForQuota = false;
+            if (profileCountdownIntervalId !== null) {
+              clearInterval(profileCountdownIntervalId);
+              profileCountdownIntervalId = null;
+            }
+            // Deduct 10 credits for this request
+            quotaState.creditsLeft -= 10;
+            updateQuotaUI();
+            waitResolve();
+          }
+        };
+
+        checkWallClockMinute();
+        profileCountdownIntervalId = setInterval(checkWallClockMinute, 1000);
+      });
+
+      resolve();
+    });
+  });
+}
+
+/**
+ * Fetches company profile description from Twelve Data profile endpoint.
+ * Budgeted at 10 credits per symbol with 10s timeout and 1 retry.
+ *
+ * @param {string} ticker - Constituent ticker symbol
+ * @param {string} apiKey - Twelve Data API key
+ * @param {Function} onCountdownTick - Callback for quota countdown
+ * @returns {Promise<Object>} Profile object
+ */
+export async function fetchCompanyProfile(ticker, apiKey, onCountdownTick) {
+  // Ensure profile cache object exists
+  if (appState.profiles === null || typeof appState.profiles !== "object") {
+    appState.profiles = {};
+  }
+
+  // Return cached profile if already fetched
+  const existingProfile = appState.profiles[ticker];
+  const isAlreadyCached = existingProfile !== undefined && existingProfile !== null;
+  if (isAlreadyCached === true) {
+    return existingProfile;
+  }
+
+  // Acquire 10 credits from shared quotaState
+  await acquireProfileQuota(ticker, onCountdownTick);
+
+  // Update in-progress status row
+  setSurvivorProfileStatus(ticker, "fetching");
+
+  const url = `https://api.twelvedata.com/profile?symbol=${encodeURIComponent(ticker)}&apikey=${encodeURIComponent(apiKey)}`;
+
+  try {
+    const response = await fetchWithTimeoutAndRetry(url, 10000);
+
+    // Read provider header if present
+    let headerCredits = null;
+    try {
+      headerCredits = response.headers.get("api-credits-left");
+    } catch (e) {
+      // Header inspection ignored
+    }
+    const hasHeader = headerCredits !== null && headerCredits !== "" && isNaN(parseInt(headerCredits, 10)) === false;
+    if (hasHeader === true) {
+      quotaState.creditsLeft = parseInt(headerCredits, 10);
+      quotaState.isEstimated = false;
+      updateQuotaUI();
+    }
+
+    const isOk = response.ok === true;
+    if (isOk === false) {
+      const isRateLimit = response.status === 429;
+      if (isRateLimit === true) {
+        quotaState.creditsLeft = 0;
+        quotaState.waitingForQuota = true;
+        // Retry after waiting for next minute
+        await acquireProfileQuota(ticker, onCountdownTick);
+        return fetchCompanyProfile(ticker, apiKey, onCountdownTick);
+      }
+      throw new Error(`Profile endpoint failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    const isApiError = data !== null && typeof data === "object" && (data.status === "error" || data.code === 429);
+    if (isApiError === true) {
+      const errMsg = typeof data.message === "string" ? data.message.toLowerCase() : "";
+      const isQuotaMsg = errMsg.includes("run out of api credits") || data.code === 429;
+      if (isQuotaMsg === true) {
+        quotaState.creditsLeft = 0;
+        quotaState.waitingForQuota = true;
+        await acquireProfileQuota(ticker, onCountdownTick);
+        return fetchCompanyProfile(ticker, apiKey, onCountdownTick);
+      }
+      throw new Error(data.message || "Twelve Data error");
+    }
+
+    const rawDescription = typeof data.description === "string" ? data.description.trim() : "";
+    const hasValidDesc = rawDescription.length > 0;
+    const fullDescription = hasValidDesc === true ? rawDescription : "Summary unavailable";
+    const threeSentenceSummary = hasValidDesc === true ? truncateToThreeSentences(rawDescription) : "Summary unavailable";
+    const status = hasValidDesc === true ? "done" : "unavailable";
+
+    const profileObj = {
+      ticker: ticker,
+      description: fullDescription,
+      summary: threeSentenceSummary,
+      status: status,
+      isEstimated: quotaState.isEstimated,
+      creditSource: quotaState.isEstimated === true ? "estimated locally" : "provider header"
+    };
+
+    appState.profiles[ticker] = profileObj;
+    setSurvivorProfileStatus(ticker, status, profileObj);
+    return profileObj;
+  } catch (err) {
+    console.warn(`Profile fetch failed for ${ticker}:`, err);
+    const fallbackObj = {
+      ticker: ticker,
+      description: "Summary unavailable",
+      summary: "Summary unavailable",
+      status: "unavailable",
+      isEstimated: quotaState.isEstimated,
+      creditSource: quotaState.isEstimated === true ? "estimated locally" : "provider header"
+    };
+    appState.profiles[ticker] = fallbackObj;
+    setSurvivorProfileStatus(ticker, "unavailable", fallbackObj);
+    return fallbackObj;
+  }
+}
+
+/**
+ * Temporary status tracking for rendering profile table rows before full completion.
+ */
+const survivorRowState = {};
+
+function setSurvivorProfileStatus(ticker, status, profileObj = null) {
+  survivorRowState[ticker] = {
+    status: status,
+    profile: profileObj,
+    countdown: quotaState.countdownSeconds || 60
+  };
+  updateSingleSurvivorRowUI(ticker);
+  updateStage5Metrics();
+}
+
+/**
+ * Runs the full Stage 5 Text Gate pipeline:
+ * 1. Checks Riskline feed first. If unavailable, technical survivors pass as Unclassified.
+ * 2. Fetches Twelve Data profile descriptions for technical survivors within quota budget.
+ * 3. Truncates descriptions to 3 sentences and renders Stage 5 UI.
+ *
+ * @param {boolean} forceRefresh - If true, re-evaluates stage (cached profiles are still kept)
+ * @returns {Promise<boolean>}
+ */
+export async function runStage5Pipeline(forceRefresh = false) {
+  const hasSurvivors = appState.screenResult !== null &&
+    Array.isArray(appState.screenResult.survivors) === true &&
+    appState.screenResult.survivors.length > 0;
+
+  if (hasSurvivors === false) {
+    setStageStatus(5, "idle");
+    renderStage5UI();
+    return false;
+  }
+
+  setStageStatus(5, "running");
+  renderStage5UI();
+
+  // Remove existing feed banners
+  removeGlobalBanner("riskline-feed-unavailable");
+
+  // Step 1: Check Riskline macro feed FIRST
+  let risklineSuccess = false;
+  try {
+    await fetchRisklineAlerts();
+    risklineSuccess = true;
+  } catch (err) {
+    console.warn("Riskline feed unavailable:", err);
+    risklineSuccess = false;
+  }
+
+  const survivors = appState.screenResult.survivors;
+
+  // If Riskline is unavailable, no profile is fetched and no classifier call is made
+  if (risklineSuccess === false) {
+    if (appState.labels === null || typeof appState.labels !== "object") {
+      appState.labels = {};
+    }
+
+    for (let i = 0; i < survivors.length; i += 1) {
+      const sym = survivors[i];
+      appState.labels[sym] = {
+        label: "Unclassified",
+        reason: "macro feed unavailable"
+      };
+    }
+
+    appState.passedSurvivors = [...survivors];
+
+    addGlobalBanner(
+      "riskline-feed-unavailable",
+      "Riskline macro alerts feed is unavailable. Technical survivors have been marked as Unclassified and pass through the text gate.",
+      "warning"
+    );
+
+    setStageStatus(5, "done");
+    renderStage5UI();
+    return true;
+  }
+
+  // Step 2: Riskline available, fetch profiles for technical survivors
+  if (appState.profiles === null || typeof appState.profiles !== "object") {
+    appState.profiles = {};
+  }
+
+  const apiKey = appState.keys.twelveData || "";
+  const tickersToFetch = survivors.filter((sym) => {
+    const isCached = appState.profiles[sym] !== undefined && appState.profiles[sym] !== null;
+    return isCached === false;
+  });
+
+  // Set initial waiting / idle state for un-fetched survivors
+  for (let i = 0; i < survivors.length; i += 1) {
+    const sym = survivors[i];
+    const isCached = appState.profiles[sym] !== undefined && appState.profiles[sym] !== null;
+    if (isCached === true) {
+      survivorRowState[sym] = {
+        status: appState.profiles[sym].status,
+        profile: appState.profiles[sym],
+        countdown: 0
+      };
+    } else {
+      survivorRowState[sym] = {
+        status: "waiting",
+        profile: null,
+        countdown: quotaState.countdownSeconds || 60
+      };
+    }
+  }
+
+  renderStage5UI();
+
+  if (tickersToFetch.length > 0) {
+    // Process profile requests with concurrency cap of 5
+    const CONCURRENCY_LIMIT = 5;
+    let index = 0;
+
+    const worker = async () => {
+      while (index < tickersToFetch.length) {
+        const currentIndex = index;
+        index += 1;
+        const sym = tickersToFetch[currentIndex];
+
+        await fetchCompanyProfile(sym, apiKey, (tickerSym, secs) => {
+          if (survivorRowState[tickerSym] !== undefined) {
+            survivorRowState[tickerSym].status = "waiting";
+            survivorRowState[tickerSym].countdown = secs;
+            updateSingleSurvivorRowUI(tickerSym);
+          }
+        });
+      }
+    };
+
+    const workerCount = Math.min(CONCURRENCY_LIMIT, tickersToFetch.length);
+    const workers = [];
+    for (let w = 0; w < workerCount; w += 1) {
+      workers.push(worker());
+    }
+
+    await Promise.all(workers);
+  }
+
+  setStageStatus(5, "done");
+  renderStage5UI();
+  return true;
+}
+
+/**
+ * Updates a single survivor table row in Stage 5 for responsive status and countdown changes.
+ *
+ * @param {string} ticker - Constituent ticker
+ */
+function updateSingleSurvivorRowUI(ticker) {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const statusCell = document.getElementById(`s5-status-cell-${ticker}`);
+  if (statusCell === null) {
+    return;
+  }
+
+  const rowState = survivorRowState[ticker];
+  if (rowState === undefined) {
+    return;
+  }
+
+  const isDone = rowState.status === "done";
+  const isWaiting = rowState.status === "waiting";
+  const isFetching = rowState.status === "fetching";
+  const isUnavailable = rowState.status === "unavailable";
+
+  const creditSourceLabel = (rowState.profile && rowState.profile.creditSource === "provider header") || quotaState.isEstimated === false
+    ? "credits from provider header"
+    : "credits estimated locally";
+
+  let statusBadgeHtml = "";
+  if (isDone === true) {
+    statusBadgeHtml = `
+      <span class="badge-status-pass">Done</span>
+      <span class="credit-source-text">${creditSourceLabel}</span>
+    `;
+  } else if (isWaiting === true) {
+    const countdown = rowState.countdown || quotaState.countdownSeconds || 60;
+    statusBadgeHtml = `
+      <span class="badge-status-waiting">Waiting for quota (${countdown}s)</span>
+      <span class="credit-source-text">${creditSourceLabel}</span>
+    `;
+  } else if (isFetching === true) {
+    statusBadgeHtml = `
+      <span class="badge-status-running">Fetching profile...</span>
+      <span class="credit-source-text">${creditSourceLabel}</span>
+    `;
+  } else if (isUnavailable === true) {
+    statusBadgeHtml = `
+      <span class="badge-status-fail">Summary unavailable</span>
+      <span class="credit-source-text">${creditSourceLabel}</span>
+    `;
+  }
+
+  statusCell.innerHTML = statusBadgeHtml;
+
+  // Also update summary cell if done or unavailable
+  const summaryCell = document.getElementById(`s5-summary-cell-${ticker}`);
+  if (summaryCell !== null && rowState.profile !== null) {
+    const summary = rowState.profile.summary;
+    const fullDesc = rowState.profile.description;
+    const hasMore = fullDesc !== "Summary unavailable" && fullDesc.trim() !== summary.trim();
+
+    summaryCell.innerHTML = `
+      <div class="summary-cell-content">
+        <p class="three-sentence-summary">${escapeHtml(summary)}</p>
+        ${hasMore === true ? `
+          <button type="button" class="btn-more-less" id="btn-toggle-desc-${ticker}" data-ticker="${ticker}" aria-expanded="false">
+            More
+          </button>
+          <div class="full-description-box hidden" id="full-desc-${ticker}">
+            <span class="full-description-label">Full Company Description</span>
+            <p class="full-description-text">${escapeHtml(fullDesc)}</p>
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }
+}
+
+/**
+ * Updates Stage 5 summary metrics cards.
+ */
+function updateStage5Metrics() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const survivors = (appState.screenResult && appState.screenResult.survivors) || [];
+  const survivorsEl = document.getElementById("s5-survivors-count");
+  if (survivorsEl !== null) {
+    survivorsEl.textContent = survivors.length.toString();
+  }
+
+  const alertsEl = document.getElementById("s5-alerts-count");
+  if (alertsEl !== null) {
+    alertsEl.textContent = (appState.alerts ? appState.alerts.length : 0).toString();
+  }
+
+  const creditsEl = document.getElementById("s5-credits-left");
+  if (creditsEl !== null) {
+    const credVal = quotaState.creditsLeft !== null ? quotaState.creditsLeft : (appState.settings.creditsPerMinute || 144);
+    creditsEl.textContent = credVal.toString();
+  }
+
+  const sourceEl = document.getElementById("s5-credits-source");
+  if (sourceEl !== null) {
+    sourceEl.textContent = quotaState.isEstimated === true ? "Estimated locally" : "From provider header";
+  }
+
+  const cachedEl = document.getElementById("s5-profiles-cached");
+  if (cachedEl !== null) {
+    const cachedCount = survivors.filter((s) => appState.profiles && appState.profiles[s]).length;
+    cachedEl.textContent = `${cachedCount} / ${survivors.length}`;
+  }
+}
+
+/**
+ * Returns sector for a ticker symbol from universe or default list.
+ *
+ * @param {string} ticker - Constituent symbol
+ * @returns {string} Sector name
+ */
+function getConstituentSector(ticker) {
+  if (appState.universe !== null && Array.isArray(appState.universe) === true) {
+    const item = appState.universe.find((c) => c.ticker === ticker);
+    if (item !== undefined && typeof item.sector === "string") {
+      return item.sector;
+    }
+  } else if (appState.universe !== null && typeof appState.universe === "object" && Array.isArray(appState.universe.constituents) === true) {
+    const item = appState.universe.constituents.find((c) => c.ticker === ticker);
+    if (item !== undefined && typeof item.sector === "string") {
+      return item.sector;
+    }
+  }
+
+  if (Array.isArray(DEFAULT_UNIVERSE) === true) {
+    const defItem = DEFAULT_UNIVERSE.find((c) => c.ticker === ticker);
+    if (defItem !== undefined && typeof defItem.sector === "string") {
+      return defItem.sector;
+    }
+  }
+
+  return "Unknown";
+}
+
+/**
+ * Renders the entire Stage 5 Text Gate UI:
+ * - Metrics summary
+ * - Macro alerts card
+ * - Survivor business summaries table with More/Less toggle and status column
+ */
+export function renderStage5UI() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const placeholderEl = document.getElementById("stage-5-placeholder");
+  const containerEl = document.getElementById("stage-5-container");
+  if (placeholderEl === null || containerEl === null) {
+    return;
+  }
+
+  const survivors = (appState.screenResult && appState.screenResult.survivors) || [];
+  const hasSurvivors = survivors.length > 0;
+
+  if (hasSurvivors === false) {
+    placeholderEl.classList.remove("hidden");
+    containerEl.classList.add("hidden");
+    const placeholderText = document.getElementById("stage-5-placeholder-text");
+    if (placeholderText !== null) {
+      placeholderText.textContent = "Stage 5: Macro alerts and business summaries will be assembled here once technical survivors qualify from Stage 4.";
+    }
+    return;
+  }
+
+  placeholderEl.classList.add("hidden");
+  containerEl.classList.remove("hidden");
+
+  updateStage5Metrics();
+
+  // Render Riskline Macro Alerts
+  const alertsListEl = document.getElementById("s5-macro-alerts-list");
+  const macroStatusBadge = document.getElementById("s5-macro-status-badge");
+  const hasAlerts = Array.isArray(appState.alerts) === true && appState.alerts.length > 0;
+
+  if (alertsListEl !== null) {
+    if (hasAlerts === true) {
+      if (macroStatusBadge !== null) {
+        macroStatusBadge.className = "badge badge-status-pass";
+        macroStatusBadge.textContent = `${appState.alerts.length} alerts loaded`;
+      }
+      const alertsHtml = appState.alerts.map((a) => {
+        return `
+          <div class="macro-alert-item">
+            <span class="macro-alert-title">${escapeHtml(a.title)}</span>
+            <div class="macro-alert-meta">
+              <span class="macro-tag macro-tag-region">${escapeHtml(a.region)}</span>
+              <span class="macro-tag macro-tag-category">${escapeHtml(a.category)}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+      alertsListEl.innerHTML = alertsHtml;
+    } else {
+      const isDone = appState.stageStatus[5] === "done";
+      if (macroStatusBadge !== null) {
+        macroStatusBadge.className = isDone ? "badge badge-status-fail" : "badge";
+        macroStatusBadge.textContent = isDone ? "Feed Unavailable" : "Not Loaded";
+      }
+      alertsListEl.innerHTML = `<p class="table-empty-row" style="padding: 12px;">No macro alerts loaded. ${isDone ? "Macro feed was unreachable; technical survivors pass as Unclassified." : "Click Assemble Alerts & Summaries to fetch."}</p>`;
+    }
+  }
+
+  // Render Business Summaries Table
+  const tbodyEl = document.getElementById("stage-5-profiles-tbody");
+  const profilesStatusBadge = document.getElementById("s5-profiles-status-badge");
+
+  if (tbodyEl !== null) {
+    const rowsHtml = survivors.map((ticker) => {
+      const sector = getConstituentSector(ticker);
+      const profile = appState.profiles ? appState.profiles[ticker] : null;
+      const rowState = survivorRowState[ticker];
+
+      let summaryText = "Pending fetch...";
+      let fullDesc = "";
+      let hasMore = false;
+      let statusBadgeHtml = `<span class="badge-status-waiting">Waiting</span>`;
+
+      if (profile !== null && profile !== undefined) {
+        summaryText = profile.summary;
+        fullDesc = profile.description;
+        hasMore = fullDesc !== "Summary unavailable" && fullDesc.trim() !== summaryText.trim();
+        const creditSourceLabel = profile.creditSource === "provider header" || quotaState.isEstimated === false
+          ? "credits from provider header"
+          : "credits estimated locally";
+
+        if (profile.status === "done") {
+          statusBadgeHtml = `
+            <span class="badge-status-pass">Done</span>
+            <span class="credit-source-text">${creditSourceLabel}</span>
+          `;
+        } else if (profile.status === "unavailable") {
+          statusBadgeHtml = `
+            <span class="badge-status-fail">Summary unavailable</span>
+            <span class="credit-source-text">${creditSourceLabel}</span>
+          `;
+        }
+      } else if (rowState !== undefined) {
+        const creditSourceLabel = quotaState.isEstimated === false
+          ? "credits from provider header"
+          : "credits estimated locally";
+
+        if (rowState.status === "waiting") {
+          const countdown = rowState.countdown || quotaState.countdownSeconds || 60;
+          statusBadgeHtml = `
+            <span class="badge-status-waiting">Waiting for quota (${countdown}s)</span>
+            <span class="credit-source-text">${creditSourceLabel}</span>
+          `;
+        } else if (rowState.status === "fetching") {
+          statusBadgeHtml = `
+            <span class="badge-status-running">Fetching profile...</span>
+            <span class="credit-source-text">${creditSourceLabel}</span>
+          `;
+        }
+      }
+
+      return `
+        <tr id="s5-row-${ticker}">
+          <td>
+            <span class="constituent-ticker-cell">${escapeHtml(ticker)}</span>
+          </td>
+          <td>
+            <span class="constituent-sector-cell">${escapeHtml(sector)}</span>
+          </td>
+          <td id="s5-summary-cell-${ticker}">
+            <div class="summary-cell-content">
+              <p class="three-sentence-summary">${escapeHtml(summaryText)}</p>
+              ${hasMore === true ? `
+                <button type="button" class="btn-more-less" id="btn-toggle-desc-${ticker}" data-ticker="${ticker}" aria-expanded="false">
+                  More
+                </button>
+                <div class="full-description-box hidden" id="full-desc-${ticker}">
+                  <span class="full-description-label">Full Company Description</span>
+                  <p class="full-description-text">${escapeHtml(fullDesc)}</p>
+                </div>
+              ` : ""}
+            </div>
+          </td>
+          <td id="s5-status-cell-${ticker}">
+            ${statusBadgeHtml}
+          </td>
+        </tr>
+      `;
+    }).join("");
+
+    tbodyEl.innerHTML = rowsHtml;
+
+    if (profilesStatusBadge !== null) {
+      const allDone = survivors.every((s) => appState.profiles && appState.profiles[s]);
+      if (allDone === true) {
+        profilesStatusBadge.className = "badge badge-status-pass";
+        profilesStatusBadge.textContent = "Done";
+      } else {
+        profilesStatusBadge.className = "badge";
+        profilesStatusBadge.textContent = `${survivors.filter((s) => appState.profiles && appState.profiles[s]).length} / ${survivors.length} Ready`;
+      }
+    }
+  }
+}
+
+/**
+ * Sets up user interaction listeners for Stage 5.
+ */
+export function setupStage5() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  // Run Stage 5 button
+  const runBtn = document.getElementById("btn-run-stage-5");
+  if (runBtn !== null) {
+    runBtn.addEventListener("click", () => {
+      runStage5Pipeline(false);
+    });
+  }
+
+  // Delegated More/Less toggle handler
+  document.addEventListener("click", (evt) => {
+    const target = evt.target;
+    if (target === null || target === undefined) {
+      return;
+    }
+    const moreBtn = target.closest(".btn-more-less");
+    if (moreBtn !== null) {
+      const ticker = moreBtn.getAttribute("data-ticker");
+      const descBox = document.getElementById(`full-desc-${ticker}`);
+      if (descBox !== null) {
+        const isHidden = descBox.classList.contains("hidden");
+        if (isHidden === true) {
+          descBox.classList.remove("hidden");
+          moreBtn.textContent = "Less";
+          moreBtn.setAttribute("aria-expanded", "true");
+        } else {
+          descBox.classList.add("hidden");
+          moreBtn.textContent = "More";
+          moreBtn.setAttribute("aria-expanded", "false");
+        }
+      }
+    }
+  });
+
+  renderStage5UI();
+}
+
 /**
  * Updates all settings input fields in the DOM from appState.settings.
  */
@@ -5772,6 +6638,17 @@ if (hasWindow === true) {
   window.runStage4Screen = runStage4Screen;
   window.renderStage4UI = renderStage4UI;
   window.setupStage4 = setupStage4;
+  window.DEFAULT_RISKLINE_URL = DEFAULT_RISKLINE_URL;
+  window.risklineAlertsUrl = risklineAlertsUrl;
+  window.setRisklineAlertsUrl = setRisklineAlertsUrl;
+  window.splitSentences = splitSentences;
+  window.truncateToThreeSentences = truncateToThreeSentences;
+  window.fetchRisklineAlerts = fetchRisklineAlerts;
+  window.acquireProfileQuota = acquireProfileQuota;
+  window.fetchCompanyProfile = fetchCompanyProfile;
+  window.runStage5Pipeline = runStage5Pipeline;
+  window.renderStage5UI = renderStage5UI;
+  window.setupStage5 = setupStage5;
 }
 
 function initializeApp() {
@@ -5783,6 +6660,7 @@ function initializeApp() {
   setupStage2();
   setupStage3();
   setupStage4();
+  setupStage5();
 }
 
 const hasDocument = typeof document !== "undefined";

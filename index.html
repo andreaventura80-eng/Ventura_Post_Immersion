@@ -932,8 +932,94 @@
       </div>
       <div class="stage-body" id="stage-body-5">
         <div class="stage-content" id="stage-content-5">
-          <div class="stage-placeholder">
-            <p class="placeholder-text">Stage 5: Text gate controls will be rendered here.</p>
+          <div class="stage-placeholder" id="stage-5-placeholder">
+            <p class="placeholder-text" id="stage-5-placeholder-text">Stage 5: Macro alerts and business summaries will be assembled here once technical survivors qualify from Stage 4.</p>
+          </div>
+
+          <div class="stage-container hidden" id="stage-5-container">
+            <!-- Summary Metrics -->
+            <div class="stage-metrics-grid" id="stage-5-metrics">
+              <div class="metric-card" id="s5-metric-survivors-card">
+                <span class="metric-label">Technical Survivors</span>
+                <span class="metric-value" id="s5-survivors-count">0</span>
+                <span class="metric-subtext" id="s5-survivors-subtext">Passing Stage 4 screen</span>
+              </div>
+              <div class="metric-card" id="s5-metric-alerts-card">
+                <span class="metric-label">Riskline Macro Alerts</span>
+                <span class="metric-value" id="s5-alerts-count">0</span>
+                <span class="metric-subtext" id="s5-alerts-subtext">Unauthenticated feed</span>
+              </div>
+              <div class="metric-card" id="s5-metric-quota-card">
+                <span class="metric-label">Credits Remaining</span>
+                <span class="metric-value" id="s5-credits-left">--</span>
+                <span class="metric-subtext" id="s5-credits-source">Estimated locally</span>
+              </div>
+              <div class="metric-card" id="s5-metric-profiles-card">
+                <span class="metric-label">Profiles Cached</span>
+                <span class="metric-value" id="s5-profiles-cached">0 / 0</span>
+                <span class="metric-subtext" id="s5-profiles-subtext">Cached for session</span>
+              </div>
+            </div>
+
+            <!-- Action Controls -->
+            <div class="stage-actions-bar" id="stage-5-actions-bar">
+              <button type="button" class="btn btn-primary" id="btn-run-stage-5">
+                Assemble Alerts &amp; Summaries
+              </button>
+              <span class="stage-action-note" id="stage-5-action-note">
+                Riskline feed is fetched first. If unavailable, technical survivors qualify as Unclassified.
+              </span>
+            </div>
+
+            <!-- Riskline Macro Alerts Card -->
+            <div class="content-card" id="stage-5-macro-card">
+              <div class="content-card-header">
+                <div class="header-titles">
+                  <h3 class="card-title">Macro Risk Alerts (Riskline)</h3>
+                  <p class="card-subtitle" id="s5-macro-subtitle">Recent geopolitical and macroeconomic alerts from api.riskline.com</p>
+                </div>
+                <div class="header-badges">
+                  <span class="badge" id="s5-macro-status-badge">Idle</span>
+                </div>
+              </div>
+              <div class="card-body" id="s5-macro-body">
+                <div class="macro-alerts-container" id="s5-macro-alerts-list">
+                  <p class="table-empty-row">No macro alerts fetched yet.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Technical Survivors Business Summaries Table Card -->
+            <div class="content-card" id="stage-5-profiles-card">
+              <div class="content-card-header">
+                <div class="header-titles">
+                  <h3 class="card-title">Constituent Business Summaries</h3>
+                  <p class="card-subtitle">First three sentences of company description sent to classifier model. Quota-managed at 10 credits/symbol.</p>
+                </div>
+                <div class="header-badges">
+                  <span class="badge" id="s5-profiles-status-badge">Waiting</span>
+                </div>
+              </div>
+              <div class="card-body">
+                <div class="table-responsive">
+                  <table class="apple-data-table" id="stage-5-profiles-table" aria-label="Constituent Business Summaries Table">
+                    <thead>
+                      <tr>
+                        <th scope="col" style="width: 100px;">Ticker</th>
+                        <th scope="col" style="width: 130px;">Sector</th>
+                        <th scope="col">Business Summary (Sent to Model)</th>
+                        <th scope="col" style="width: 250px;">Status &amp; Credit Source</th>
+                      </tr>
+                    </thead>
+                    <tbody id="stage-5-profiles-tbody">
+                      <tr>
+                        <td colspan="4" class="table-empty-row">Run Stage 5 to assemble business summaries for technical survivors.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
