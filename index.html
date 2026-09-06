@@ -1198,6 +1198,83 @@
               </div>
             </div>
 
+            <!-- Stage 8 View 1: Horizontal Bar Chart of Minimum Variance Allocation -->
+            <div class="content-card" id="stage-8-allocation-card">
+              <div class="content-card-header">
+                <div>
+                  <h3 class="card-title" id="stage-8-chart-title">Minimum variance allocation of 1,000,000 USD</h3>
+                  <p class="card-subtitle" id="stage-8-chart-subtitle">Constituent positions sorted from largest to smallest with exact whole-dollar allocations</p>
+                </div>
+                <span class="badge badge-candidate" id="stage-8-allocation-badge">Candidate Portfolio</span>
+              </div>
+              <div class="stage-8-chart-body" id="stage-8-chart-container">
+                <div class="stage-8-bars-list" id="stage-8-allocation-bars">
+                  <!-- Bars rendered dynamically -->
+                </div>
+              </div>
+            </div>
+
+            <!-- Stage 8 View 2: Method Comparison Table -->
+            <div class="content-card" id="stage-8-comparison-card">
+              <div class="content-card-header">
+                <div>
+                  <h3 class="card-title">Portfolio Comparison</h3>
+                  <p class="card-subtitle" id="stage-8-comparison-label">In-sample: today's weights applied to the trailing one-year window</p>
+                </div>
+              </div>
+              <div class="table-responsive" id="stage-8-comparison-table-wrapper">
+                <table class="data-table" id="stage-8-comparison-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Method</th>
+                      <th scope="col">Annualized Return</th>
+                      <th scope="col">Annualized Volatility</th>
+                      <th scope="col">Sharpe</th>
+                      <th scope="col">Feasible</th>
+                      <th scope="col">Largest Weight</th>
+                      <th scope="col">Largest Position (USD)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="stage-8-comparison-tbody">
+                    <!-- Comparison rows rendered dynamically -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Stage 8 View 3: Sector Concentration Summary -->
+            <div class="content-card" id="stage-8-sector-card">
+              <div class="content-card-header">
+                <div>
+                  <h3 class="card-title">Sector Concentration</h3>
+                  <p class="card-subtitle" id="stage-8-sector-subtitle">Survivor sector exposures evaluated against the 50% statutory diversification ceiling</p>
+                </div>
+                <span class="badge badge-status-pass" id="stage-8-sector-limit-badge">Max 50.00%</span>
+              </div>
+              <div class="stage-8-sector-body" id="stage-8-sector-summary-container">
+                <div class="stage-8-sector-grid" id="stage-8-sector-grid">
+                  <!-- Sector cards and bars rendered dynamically -->
+                </div>
+              </div>
+            </div>
+
+            <!-- Stage 8 View 4: Rolling 60-Day Beta Display -->
+            <div class="content-card" id="stage-8-beta-card">
+              <div class="content-card-header">
+                <div>
+                  <h3 class="card-title">Rolling Beta to SPY</h3>
+                  <p class="card-subtitle" id="stage-8-beta-window-label">60-session window</p>
+                </div>
+                <div class="stage-8-beta-stat-box" id="stage-8-current-beta-display">
+                  <span class="beta-stat-label">Current Beta:</span>
+                  <span class="beta-stat-value" id="stage-8-beta-val">--</span>
+                </div>
+              </div>
+              <div class="stage-8-beta-chart-area" id="stage-8-beta-display-container">
+                <!-- Rolling beta line chart or unavailable reason box rendered dynamically -->
+              </div>
+            </div>
+
             <!-- Stage 8 Investment Note Card -->
             <div class="content-card" id="stage-8-note-card">
               <div class="content-card-header">

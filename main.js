@@ -8275,6 +8275,65 @@ export function formatWholeDollars(amount) {
 }
 
 /**
+ * Formats a ratio as a percentage with two decimal places.
+ *
+ * @param {number} val
+ * @returns {string} e.g. "12.34%"
+ */
+export function formatPercentage(val) {
+  const isNum = typeof val === "number" && isNaN(val) === false;
+  if (isNum === false) {
+    return "0.00%";
+  }
+  return (val * 100).toFixed(2) + "%";
+}
+
+/**
+ * Formats a numeric value to two decimal places.
+ *
+ * @param {number} val
+ * @returns {string} e.g. "1.23"
+ */
+export function formatTwoDecimals(val) {
+  const isNum = typeof val === "number" && isNaN(val) === false;
+  if (isNum === false) {
+    return "0.00";
+  }
+  return val.toFixed(2);
+}
+
+/**
+ * Formats a Sharpe ratio to two decimal places.
+ *
+ * @param {number} val
+ * @returns {string} e.g. "1.23"
+ */
+export function formatSharpe(val) {
+  return formatTwoDecimals(val);
+}
+
+/**
+ * Formats a Beta value to two decimal places.
+ *
+ * @param {number} val
+ * @returns {string} e.g. "0.85"
+ */
+export function formatBeta(val) {
+  return formatTwoDecimals(val);
+}
+
+/**
+ * Single display formatting suite shared by Stage 8 and the note payload builder.
+ */
+export const displayFormatters = {
+  percentage: formatPercentage,
+  dollars: formatWholeDollars,
+  twoDecimals: formatTwoDecimals,
+  sharpe: formatSharpe,
+  beta: formatBeta
+};
+
+/**
  * Computes portfolio return, volatility, Sharpe ratio, and daily series.
  * In-sample: weights applied to trailing return series window.
  *
@@ -10439,6 +10498,118 @@ export async function regenerateNote() {
 /**
  * Renders the Stage 8 Portfolio & Note user interface.
  */
+/**
+ * Generates the SVG markup for the rolling 60-day beta line chart.
+ *
+ * @param {Array<{ date: string, beta: number }>} series
+ * @param {number} winNum
+ * @returns {string} SVG HTML string
+ */
+export function generateBetaSvgChart(series, winNum) {
+  const isSeriesArray = Array.isArray(series) === true;
+  const count = isSeriesArray === true ? series.length : 0;
+  const hasSufficientPoints = count >= 2;
+  if (hasSufficientPoints === false) {
+    return `
+      <div class="stage-8-beta-unavailable">
+        <span class="unavailable-reason">Insufficient rolling series data (${count} points).</span>
+      </div>
+    `;
+  }
+
+  const svgWidth = 720;
+  const svgHeight = 200;
+  const padLeft = 55;
+  const padRight = 30;
+  const padTop = 25;
+  const padBottom = 35;
+  const plotW = svgWidth - padLeft - padRight;
+  const plotH = svgHeight - padTop - padBottom;
+
+  let minBeta = Infinity;
+  let maxBeta = -Infinity;
+  for (let i = 0; i < count; i += 1) {
+    const b = series[i].beta;
+    const isSmaller = b < minBeta;
+    if (isSmaller === true) {
+      minBeta = b;
+    }
+    const isLarger = b > maxBeta;
+    if (isLarger === true) {
+      maxBeta = b;
+    }
+  }
+
+  const yMin = Math.min(0, Math.floor((minBeta - 0.15) * 10) / 10);
+  const yMax = Math.max(1.5, Math.ceil((maxBeta + 0.15) * 10) / 10);
+  const yRange = yMax - yMin > 0 ? yMax - yMin : 1.0;
+
+  const points = [];
+  for (let i = 0; i < count; i += 1) {
+    const x = padLeft + (i / (count - 1)) * plotW;
+    const y = padTop + plotH - ((series[i].beta - yMin) / yRange) * plotH;
+    points.push({ x, y, date: series[i].date, beta: series[i].beta });
+  }
+
+  let linePath = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+  for (let i = 1; i < count; i += 1) {
+    linePath += ` L ${points[i].x.toFixed(1)} ${points[i].y.toFixed(1)}`;
+  }
+
+  const areaPath = `${linePath} L ${points[count - 1].x.toFixed(1)} ${(padTop + plotH).toFixed(1)} L ${points[0].x.toFixed(1)} ${(padTop + plotH).toFixed(1)} Z`;
+
+  const yBench = padTop + plotH - ((1.0 - yMin) / yRange) * plotH;
+  const benchInRange = yBench >= padTop && yBench <= padTop + plotH;
+
+  const firstDate = series[0].date || "";
+  const midDate = series[Math.floor(count / 2)].date || "";
+  const lastDate = series[count - 1].date || "";
+  const lastPt = points[count - 1];
+
+  let benchLineHtml = "";
+  if (benchInRange === true) {
+    benchLineHtml = `
+      <line x1="${padLeft}" y1="${yBench.toFixed(1)}" x2="${padLeft + plotW}" y2="${yBench.toFixed(1)}" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,4" />
+      <text x="${padLeft + plotW - 6}" y="${(yBench - 5).toFixed(1)}" text-anchor="end" font-size="11" font-weight="600" fill="#64748b">SPY beta = 1.00</text>
+    `;
+  }
+
+  return `
+    <svg class="stage-8-beta-svg" viewBox="0 0 ${svgWidth} ${svgHeight}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Rolling 60-day beta to SPY over time">
+      <defs>
+        <linearGradient id="betaAreaGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.25" />
+          <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.0" />
+        </linearGradient>
+      </defs>
+
+      <rect x="${padLeft}" y="${padTop}" width="${plotW}" height="${plotH}" fill="#ffffff" stroke="#e2e8f0" stroke-width="1" />
+      <line x1="${padLeft}" y1="${padTop}" x2="${padLeft + plotW}" y2="${padTop}" stroke="#f1f5f9" stroke-width="1" />
+      <line x1="${padLeft}" y1="${padTop + plotH / 2}" x2="${padLeft + plotW}" y2="${padTop + plotH / 2}" stroke="#f1f5f9" stroke-width="1" />
+      <line x1="${padLeft}" y1="${padTop + plotH}" x2="${padLeft + plotW}" y2="${padTop + plotH}" stroke="#e2e8f0" stroke-width="1" />
+
+      ${benchLineHtml}
+
+      <path d="${areaPath}" fill="url(#betaAreaGrad)" />
+      <path d="${linePath}" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+
+      <circle cx="${lastPt.x.toFixed(1)}" cy="${lastPt.y.toFixed(1)}" r="4.5" fill="#2563eb" stroke="#ffffff" stroke-width="2" />
+      <text x="${lastPt.x.toFixed(1)}" y="${(lastPt.y - 8).toFixed(1)}" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1d4ed8">${lastPt.beta.toFixed(2)}</text>
+
+      <text x="${padLeft - 8}" y="${padTop + 4}" text-anchor="end" font-size="11" font-weight="500" fill="#64748b">${yMax.toFixed(1)}</text>
+      <text x="${padLeft - 8}" y="${padTop + plotH / 2 + 4}" text-anchor="end" font-size="11" font-weight="500" fill="#64748b">${((yMax + yMin) / 2).toFixed(1)}</text>
+      <text x="${padLeft - 8}" y="${padTop + plotH}" text-anchor="end" font-size="11" font-weight="500" fill="#64748b">${yMin.toFixed(1)}</text>
+
+      <text x="${padLeft}" y="${svgHeight - 10}" text-anchor="start" font-size="11" font-weight="500" fill="#64748b">${escapeHtml(firstDate)}</text>
+      <text x="${padLeft + plotW / 2}" y="${svgHeight - 10}" text-anchor="middle" font-size="11" font-weight="500" fill="#64748b">${escapeHtml(midDate)}</text>
+      <text x="${padLeft + plotW}" y="${svgHeight - 10}" text-anchor="end" font-size="11" font-weight="500" fill="#64748b">${escapeHtml(lastDate)}</text>
+    </svg>
+  `;
+}
+
+/**
+ * Renders the Stage 8 Portfolio & Note user interface.
+ */
 export function renderStage8UI() {
   const hasDocument = typeof document !== "undefined";
   if (hasDocument === false) {
@@ -10447,7 +10618,7 @@ export function renderStage8UI() {
 
   const placeholder = document.getElementById("stage-8-placeholder");
   const container = document.getElementById("stage-8-container");
-  const hasWeights = appState.weights !== null && Array.isArray(appState.weights.minVariance) === true;
+  const hasWeights = appState.weights !== null && typeof appState.weights === "object" && Array.isArray(appState.weights.minVariance) === true;
 
   if (hasWeights === false) {
     if (placeholder !== null) {
@@ -10466,16 +10637,279 @@ export function renderStage8UI() {
     container.classList.remove("hidden");
   }
 
+  const amt = typeof appState.settings.investmentAmount === "number" ? appState.settings.investmentAmount : 1000000;
+  const formattedAmt = amt.toLocaleString("en-US");
+
+  // 1. Investment Amount input and active capital displays
   const inputAmount = document.getElementById("stage-8-investment-amount");
-  if (inputAmount !== null && document.activeElement !== inputAmount) {
-    inputAmount.value = (appState.settings.investmentAmount || 1000000).toLocaleString("en-US");
+  const isInputFocused = inputAmount !== null && document.activeElement === inputAmount;
+  if (inputAmount !== null && isInputFocused === false) {
+    inputAmount.value = formattedAmt;
   }
 
-  const badgeCapital = document.getElementById("stage-8-total-capital");
+  const badgeCapital = document.getElementById("stage-8-capital-display");
   if (badgeCapital !== null) {
-    badgeCapital.textContent = `$${(appState.settings.investmentAmount || 1000000).toLocaleString("en-US")}`;
+    badgeCapital.textContent = "$" + formattedAmt;
+  }
+  const badgeTotalCapital = document.getElementById("stage-8-total-capital");
+  if (badgeTotalCapital !== null) {
+    badgeTotalCapital.textContent = "$" + formattedAmt;
   }
 
+  // 2. Horizontal Bar Chart of Minimum Variance Allocation
+  const chartTitle = document.getElementById("stage-8-chart-title");
+  if (chartTitle !== null) {
+    chartTitle.textContent = "Minimum variance allocation of " + formattedAmt + " USD";
+  }
+
+  const survivors = Array.isArray(appState.gatedSurvivors) === true
+    ? appState.gatedSurvivors
+    : (appState.screenResult && Array.isArray(appState.screenResult.survivors) ? appState.screenResult.survivors : []);
+  const mvWeights = appState.weights.minVariance || [];
+  const mvAllocs = (appState.weights.allocations && appState.weights.allocations.minVariance) || (appState.allocations && appState.allocations.minVariance) || [];
+  const numSurvivors = survivors.length;
+
+  const barItems = [];
+  for (let i = 0; i < numSurvivors; i += 1) {
+    const sym = survivors[i];
+    const info = appState.universe.find((u) => u.ticker === sym) || { name: sym, sector: "Unknown" };
+    const w = typeof mvWeights[i] === "number" ? mvWeights[i] : 0;
+    const d = typeof mvAllocs[i] === "number" ? mvAllocs[i] : 0;
+    barItems.push({
+      ticker: sym,
+      name: info.name || sym,
+      sector: info.sector || "Unknown",
+      weight: w,
+      dollars: d
+    });
+  }
+
+  // Sort from largest to smallest weight
+  barItems.sort((a, b) => b.weight - a.weight);
+
+  // Determine max weight for relative track scaling (from unrounded weights)
+  let maxWeight = 0.0001;
+  for (let i = 0; i < barItems.length; i += 1) {
+    const isLarger = barItems[i].weight > maxWeight;
+    if (isLarger === true) {
+      maxWeight = barItems[i].weight;
+    }
+  }
+
+  const barsContainer = document.getElementById("stage-8-allocation-bars");
+  if (barsContainer !== null) {
+    let barsHtml = "";
+    for (let i = 0; i < barItems.length; i += 1) {
+      const it = barItems[i];
+      const widthPct = Math.max(2, (it.weight / maxWeight) * 100);
+      barsHtml += `
+        <div class="stage-8-bar-row" id="stage-8-bar-${escapeHtml(it.ticker)}">
+          <div class="stage-8-bar-header">
+            <div class="stage-8-bar-entity">
+              <span class="stage-8-bar-ticker">${escapeHtml(it.ticker)}</span>
+              <span class="stage-8-bar-name">${escapeHtml(it.name)}</span>
+              <span class="stage-8-bar-sector">(${escapeHtml(it.sector)})</span>
+            </div>
+            <div class="stage-8-bar-metrics">
+              <span class="stage-8-bar-dollars">${formatWholeDollars(it.dollars)}</span>
+              <span class="stage-8-bar-pct">${formatPercentage(it.weight)}</span>
+            </div>
+          </div>
+          <div class="stage-8-bar-track">
+            <div class="stage-8-bar-fill" style="width: ${widthPct}%;">
+              <span class="stage-8-bar-fill-text">${formatWholeDollars(it.dollars)}</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    barsContainer.innerHTML = barsHtml;
+  }
+
+  // 3. Comparison Table: Candidate vs Reference Benchmarks
+  const comparisonTbody = document.getElementById("stage-8-comparison-tbody");
+  if (comparisonTbody !== null) {
+    const metrics = appState.metrics || {};
+    const mv = metrics.minVariance || {};
+    const ew = metrics.equalWeight || {};
+    const iv = metrics.inverseVolatility || {};
+
+    const mvWeightsArr = Array.isArray(mv.weights) === true ? mv.weights : [];
+    const mvAllocsArr = Array.isArray(mv.allocations) === true ? mv.allocations : [];
+    const maxWeightMV = mvWeightsArr.length > 0 ? Math.max(...mvWeightsArr) : 0;
+    const maxDollarsMV = mvAllocsArr.length > 0 ? Math.max(...mvAllocsArr) : 0;
+    const isMVFeasible = mv.feasible === true;
+
+    const ewWeightsArr = Array.isArray(ew.weights) === true ? ew.weights : [];
+    const ewAllocsArr = Array.isArray(ew.allocations) === true ? ew.allocations : [];
+    const maxWeightEW = ewWeightsArr.length > 0 ? Math.max(...ewWeightsArr) : 0;
+    const maxDollarsEW = ewAllocsArr.length > 0 ? Math.max(...ewAllocsArr) : 0;
+    const isEWFeasible = ew.feasible === true;
+
+    const ivWeightsArr = Array.isArray(iv.weights) === true ? iv.weights : [];
+    const ivAllocsArr = Array.isArray(iv.allocations) === true ? iv.allocations : [];
+    const maxWeightIV = ivWeightsArr.length > 0 ? Math.max(...ivWeightsArr) : 0;
+    const maxDollarsIV = ivAllocsArr.length > 0 ? Math.max(...ivAllocsArr) : 0;
+    const isIVFeasible = iv.feasible === true;
+
+    comparisonTbody.innerHTML = `
+      <tr id="stage-8-row-min-variance">
+        <td>
+          <div style="font-weight: 700; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+            Minimum variance
+            <span class="badge-candidate">Candidate</span>
+          </div>
+        </td>
+        <td>${formatPercentage(mv.annualizedReturn)}</td>
+        <td>${formatPercentage(mv.annualizedVolatility)}</td>
+        <td>${formatSharpe(mv.sharpe)}</td>
+        <td>
+          <span class="${isMVFeasible === true ? "feasible-yes" : "feasible-no"}">
+            ${isMVFeasible === true ? "Yes" : "No"}
+          </span>
+        </td>
+        <td>${formatPercentage(maxWeightMV)}</td>
+        <td style="font-weight: 600; color: #0f172a;">${formatWholeDollars(maxDollarsMV)}</td>
+      </tr>
+      <tr id="stage-8-row-equal-weight">
+        <td>
+          <div style="font-weight: 500; color: #334155; display: flex; align-items: center; gap: 8px;">
+            Equal weight
+            <span class="badge-reference">Reference</span>
+          </div>
+        </td>
+        <td>${formatPercentage(ew.annualizedReturn)}</td>
+        <td>${formatPercentage(ew.annualizedVolatility)}</td>
+        <td>${formatSharpe(ew.sharpe)}</td>
+        <td>
+          <span class="${isEWFeasible === true ? "feasible-yes" : "feasible-no"}">
+            ${isEWFeasible === true ? "Yes" : "No"}
+          </span>
+        </td>
+        <td>${formatPercentage(maxWeightEW)}</td>
+        <td style="font-weight: 600; color: #0f172a;">${formatWholeDollars(maxDollarsEW)}</td>
+      </tr>
+      <tr id="stage-8-row-inverse-volatility">
+        <td>
+          <div style="font-weight: 500; color: #334155; display: flex; align-items: center; gap: 8px;">
+            Inverse volatility
+            <span class="badge-reference">Reference</span>
+          </div>
+        </td>
+        <td>${formatPercentage(iv.annualizedReturn)}</td>
+        <td>${formatPercentage(iv.annualizedVolatility)}</td>
+        <td>${formatSharpe(iv.sharpe)}</td>
+        <td>
+          <span class="${isIVFeasible === true ? "feasible-yes" : "feasible-no"}">
+            ${isIVFeasible === true ? "Yes" : "No"}
+          </span>
+        </td>
+        <td>${formatPercentage(maxWeightIV)}</td>
+        <td style="font-weight: 600; color: #0f172a;">${formatWholeDollars(maxDollarsIV)}</td>
+      </tr>
+    `;
+  }
+
+  // 4. Sector Concentration Summary
+  const sectorContainer = document.getElementById("stage-8-sector-grid");
+  if (sectorContainer !== null) {
+    const sectorMap = {};
+    for (let i = 0; i < numSurvivors; i += 1) {
+      const sym = survivors[i];
+      const info = appState.universe.find((u) => u.ticker === sym) || { sector: "Unknown" };
+      const secName = info.sector || "Unknown";
+      const w = typeof mvWeights[i] === "number" ? mvWeights[i] : 0;
+      const d = typeof mvAllocs[i] === "number" ? mvAllocs[i] : 0;
+
+      const hasSec = sectorMap[secName] !== undefined;
+      if (hasSec === false) {
+        sectorMap[secName] = { name: secName, weight: 0, dollars: 0, count: 0, tickers: [] };
+      }
+      sectorMap[secName].weight += w;
+      sectorMap[secName].dollars += d;
+      sectorMap[secName].count += 1;
+      sectorMap[secName].tickers.push(sym);
+    }
+
+    const sectorList = Object.values(sectorMap);
+    sectorList.sort((a, b) => b.weight - a.weight);
+
+    let sectorHtml = "";
+    for (let s = 0; s < sectorList.length; s += 1) {
+      const sec = sectorList[s];
+      const barFillPct = Math.min(100, (sec.weight / 0.50) * 100);
+      const isWithinLimit = sec.weight <= 0.500001;
+      const barClass = isWithinLimit === true ? (sec.weight > 0.45 ? "warning" : "") : "exceeded";
+
+      sectorHtml += `
+        <div class="stage-8-sector-item" id="stage-8-sector-${escapeHtml(sec.name.replace(/\s+/g, '-').toLowerCase())}">
+          <div class="stage-8-sector-item-header">
+            <div class="stage-8-sector-title-group">
+              <span class="stage-8-sector-name">${escapeHtml(sec.name)}</span>
+              <span class="stage-8-sector-count">${sec.count} constituent${sec.count === 1 ? "" : "s"} (${escapeHtml(sec.tickers.join(", "))})</span>
+            </div>
+            <span class="badge ${isWithinLimit === true ? "badge-status-pass" : "badge-status-fail"}">
+              ${isWithinLimit === true ? "Compliant (<= 50%)" : "Exceeded (> 50%)"}
+            </span>
+          </div>
+          <div class="stage-8-sector-values">
+            <span class="stage-8-sector-ratio">${formatPercentage(sec.weight)} of 50.00%</span>
+            <span class="stage-8-sector-dollars">${formatWholeDollars(sec.dollars)}</span>
+          </div>
+          <div class="stage-8-sector-bar-track">
+            <div class="stage-8-sector-bar-fill ${barClass}" style="width: ${barFillPct}%;"></div>
+          </div>
+        </div>
+      `;
+    }
+    sectorContainer.innerHTML = sectorHtml;
+  }
+
+  // 5. Rolling 60-Day Beta Display
+  const betaObj = appState.beta;
+  const hasBetaObj = betaObj !== null && typeof betaObj === "object";
+  const isBetaAvailable = hasBetaObj === true && betaObj.available === true;
+
+  const betaValEl = document.getElementById("stage-8-beta-val");
+  const betaWindowLabel = document.getElementById("stage-8-beta-window-label");
+  const betaDisplayContainer = document.getElementById("stage-8-beta-display-container");
+
+  if (betaWindowLabel !== null) {
+    const win = hasBetaObj === true && typeof betaObj.window === "number" ? betaObj.window : 60;
+    betaWindowLabel.textContent = win + "-session window";
+  }
+
+  if (isBetaAvailable === true) {
+    const curBeta = typeof betaObj.current === "number"
+      ? betaObj.current
+      : (Array.isArray(betaObj.series) === true && betaObj.series.length > 0 ? betaObj.series[betaObj.series.length - 1].beta : null);
+
+    if (betaValEl !== null) {
+      betaValEl.textContent = curBeta !== null ? formatBeta(curBeta) : "N/A";
+    }
+
+    if (betaDisplayContainer !== null) {
+      const series = Array.isArray(betaObj.series) === true ? betaObj.series : [];
+      betaDisplayContainer.innerHTML = generateBetaSvgChart(series, betaObj.window || 60);
+    }
+  } else {
+    if (betaValEl !== null) {
+      betaValEl.textContent = "Unavailable";
+    }
+
+    if (betaDisplayContainer !== null) {
+      const reasonStr = (hasBetaObj === true && typeof betaObj.reason === "string" && betaObj.reason.length > 0)
+        ? betaObj.reason
+        : "SPY unavailable";
+      betaDisplayContainer.innerHTML = `
+        <div class="stage-8-beta-unavailable" id="stage-8-beta-unavailable">
+          <span class="unavailable-reason">${escapeHtml(reasonStr)}</span>
+        </div>
+      `;
+    }
+  }
+
+  // 6. Note stale alert & body
   const staleAlert = document.getElementById("stage-8-note-stale-alert");
   const noteBody = document.getElementById("stage-8-note-body");
 
@@ -10496,6 +10930,13 @@ export function renderStage8UI() {
       noteBody.textContent = "Note unavailable. Press 'Regenerate note' to compose executive commentary.";
     }
   }
+
+  // 7. Export button synchronization
+  const btnExport = document.getElementById("btn-stage-8-export-portfolio");
+  if (btnExport !== null) {
+    const canExport = appState.reviewed === true && appState.guardrailPassed === true;
+    btnExport.disabled = canExport === false;
+  }
 }
 
 /**
@@ -10506,12 +10947,18 @@ export function setupStage8() {
 
   const stage8AmountInput = document.getElementById("stage-8-investment-amount");
   if (stage8AmountInput !== null) {
-    stage8AmountInput.onblur = (e) => {
-      validateAndSetInvestmentAmount(e.target.value);
+    const handleAmountChange = (e) => {
+      const ok = validateAndSetInvestmentAmount(e.target.value);
+      if (ok === true) {
+        renderStage8UI();
+      }
     };
+    stage8AmountInput.onchange = handleAmountChange;
+    stage8AmountInput.onblur = handleAmountChange;
     stage8AmountInput.onkeydown = (e) => {
       if (e.key === "Enter") {
-        validateAndSetInvestmentAmount(e.target.value);
+        handleAmountChange(e);
+        stage8AmountInput.blur();
       }
     };
   }
@@ -10522,7 +10969,15 @@ export function setupStage8() {
       await regenerateNote();
     };
   }
+
+  const btnStage8Export = document.getElementById("btn-stage-8-export-portfolio");
+  if (btnStage8Export !== null) {
+    btnStage8Export.onclick = () => {
+      exportPortfolio();
+    };
+  }
 }
+
 
 
 // Attach helpers and state to window for testing and subsequent prompts
@@ -10651,6 +11106,13 @@ if (hasWindow === true) {
   window.setupStage6 = setupStage6;
   window.computeRollingBeta = computeRollingBeta;
   window.recomputeRollingBeta = recomputeRollingBeta;
+  window.formatPercentage = formatPercentage;
+  window.formatSharpe = formatSharpe;
+  window.formatBeta = formatBeta;
+  window.displayFormatters = displayFormatters;
+  window.generateBetaSvgChart = generateBetaSvgChart;
+  window.renderStage8UI = renderStage8UI;
+  window.setupStage8 = setupStage8;
   window.appState = appState;
   window.state = appState;
 }
@@ -10660,6 +11122,13 @@ if (typeof globalThis !== "undefined") {
   globalThis.state = appState;
   globalThis.computeRollingBeta = computeRollingBeta;
   globalThis.recomputeRollingBeta = recomputeRollingBeta;
+  globalThis.formatPercentage = formatPercentage;
+  globalThis.formatSharpe = formatSharpe;
+  globalThis.formatBeta = formatBeta;
+  globalThis.displayFormatters = displayFormatters;
+  globalThis.generateBetaSvgChart = generateBetaSvgChart;
+  globalThis.renderStage8UI = renderStage8UI;
+  globalThis.setupStage8 = setupStage8;
 }
 
 export { appState as state };
@@ -10675,6 +11144,8 @@ function initializeApp() {
   setupStage4();
   setupStage5();
   setupStage6();
+  setupStage7();
+  setupStage8();
 }
 
 const hasDocument = typeof document !== "undefined";
