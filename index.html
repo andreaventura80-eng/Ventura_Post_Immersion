@@ -17,7 +17,7 @@
         </svg>
         <span class="nav-title">Portfolio Pipeline</span>
       </div>
-      <div class="nav-badge">8-Stage Engine</div>
+      <div class="nav-badge">9-Stage Engine</div>
     </div>
   </header>
 
@@ -51,7 +51,7 @@
     <!-- Hero Header -->
     <section class="hero-section" id="hero-banner">
       <h1 class="hero-title">Portfolio Pipeline.</h1>
-      <p class="hero-subtitle">Eight-stage quantitative pipeline with live stage tracking and session memory.</p>
+      <p class="hero-subtitle">Nine-stage quantitative pipeline with walk-forward backtesting, live stage tracking, and session memory.</p>
     </section>
 
     <!-- Stage 1 Section -->
@@ -303,6 +303,52 @@
                     <input type="text" id="setting-open-router-model" class="apple-input-field font-mono" value="anthropic/claude-3.5-sonnet" aria-describedby="hint-open-router-model" />
                   </div>
                   <span class="setting-field-hint" id="hint-open-router-model">Model used for qualitative text gate and committee commentary note.</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Group: Backtest -->
+            <div class="settings-group" id="group-backtest-settings">
+              <div class="settings-group-title-row">
+                <h4 class="settings-group-title">Backtest</h4>
+                <span class="badge-stage-setting" id="badge-backtest-settings">Stage 9 simulation</span>
+              </div>
+              <p class="settings-group-desc">Walk-forward parameters for the out-of-sample simulation. Changes affect only Stage 9.</p>
+              <div class="settings-fields-grid" id="settings-backtest-grid">
+                <!-- Holding Period H -->
+                <div class="setting-field-card" id="field-holding-period">
+                  <div class="setting-field-header">
+                    <label class="setting-field-label" for="setting-holding-period">Holding Period (H)</label>
+                  </div>
+                  <div class="input-with-unit">
+                    <input type="number" id="setting-holding-period" class="apple-input-field" min="5" max="60" step="1" value="20" aria-describedby="hint-holding-period" />
+                    <span class="input-unit-suffix">sessions</span>
+                  </div>
+                  <span class="setting-field-hint" id="hint-holding-period">Integer, 5 to 60 sessions. Default 20.</span>
+                </div>
+
+                <!-- Exit Threshold -->
+                <div class="setting-field-card" id="field-exit-threshold">
+                  <div class="setting-field-header">
+                    <label class="setting-field-label" for="setting-exit-threshold">Exit Threshold</label>
+                  </div>
+                  <div class="input-with-unit">
+                    <input type="number" id="setting-exit-threshold" class="apple-input-field" min="50" max="80" step="1" value="60" aria-describedby="hint-exit-threshold" />
+                    <span class="input-unit-suffix">RSI</span>
+                  </div>
+                  <span class="setting-field-hint" id="hint-exit-threshold">Integer, 50 to 80. Must be at least 10 above RSI threshold as set.</span>
+                </div>
+
+                <!-- Cadence -->
+                <div class="setting-field-card" id="field-cadence">
+                  <div class="setting-field-header">
+                    <label class="setting-field-label" for="setting-cadence">Cadence</label>
+                  </div>
+                  <div class="input-with-unit">
+                    <input type="number" id="setting-cadence" class="apple-input-field" min="1" max="21" step="1" value="5" aria-describedby="hint-cadence" />
+                    <span class="input-unit-suffix">sessions</span>
+                  </div>
+                  <span class="setting-field-hint" id="hint-cadence">Integer, 1 to 21 sessions. Default 5.</span>
                 </div>
               </div>
             </div>
@@ -1227,12 +1273,14 @@
                   <thead>
                     <tr>
                       <th scope="col">Method</th>
-                      <th scope="col">Annualized Return</th>
-                      <th scope="col">Annualized Volatility</th>
-                      <th scope="col">Sharpe</th>
+                      <th scope="col">Annualized Return (in-sample)</th>
+                      <th scope="col">Annualized Volatility (in-sample)</th>
+                      <th scope="col">Sharpe (in-sample)</th>
                       <th scope="col">Feasible</th>
                       <th scope="col">Largest Weight</th>
                       <th scope="col">Largest Position (USD)</th>
+                      <th scope="col" id="col-header-oos-ret" class="col-oos hidden">Mean Forward Return (out-of-sample)</th>
+                      <th scope="col" id="col-header-oos-hit" class="col-oos hidden">Hit Rate vs SPY (out-of-sample)</th>
                     </tr>
                   </thead>
                   <tbody id="stage-8-comparison-tbody">
@@ -1308,6 +1356,231 @@
                   Export Portfolio
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stage 9 Section: Walk-forward backtest -->
+    <section class="stage-section" id="stage-section-9" data-stage="9">
+      <div class="stage-header" id="stage-header-9" role="button" tabindex="0" aria-expanded="false" aria-controls="stage-body-9">
+        <div class="stage-header-main">
+          <span class="stage-num-badge">9</span>
+          <h2 class="stage-title">Stage 9: Walk-forward backtest</h2>
+          <span class="status-pill status-idle" id="stage-header-pill-9">idle</span>
+        </div>
+        <div class="stage-header-right">
+          <svg class="stage-chevron" id="stage-chevron-9" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+      <div class="stage-body collapsed" id="stage-body-9">
+        <div class="stage-content" id="stage-content-9">
+          <!-- Backtest Controls: Run, Cancel, Progress Bar -->
+          <div class="stage-9-toolbar">
+            <div class="stage-9-toolbar-left">
+              <button type="button" class="btn btn-primary" id="btn-run-backtest">
+                Run backtest
+              </button>
+              <button type="button" class="btn btn-secondary hidden" id="btn-cancel-backtest">
+                Cancel
+              </button>
+            </div>
+            <div class="stage-9-progress-container hidden" id="backtest-progress-container">
+              <div class="stage-9-progress-bar">
+                <div class="stage-9-progress-fill" id="backtest-progress-fill" style="width: 0%;"></div>
+              </div>
+              <span class="stage-9-progress-text" id="backtest-progress-text">0%</span>
+            </div>
+          </div>
+
+          <!-- Alert banner if needed -->
+          <div class="alert alert-warning hidden" id="stage-9-alert" role="alert"></div>
+
+          <!-- Placeholder when not run -->
+          <div class="stage-placeholder" id="stage-9-placeholder">
+            <p class="placeholder-text" id="stage-9-placeholder-text">Click "Run backtest" to execute the 3-year walk-forward backtest across eligible constituents.</p>
+          </div>
+
+          <!-- Results Container -->
+          <div class="stage-container hidden" id="stage-9-container">
+            <!-- Top Row: Verdict Badge & Settings Summary -->
+            <div class="stage-9-top-grid">
+              <!-- Verdict Card -->
+              <div class="content-card stage-9-verdict-card" id="stage-9-verdict-card">
+                <div class="content-card-header">
+                  <h3 class="card-title">Backtest Verdict</h3>
+                  <span class="badge" id="stage-9-verdict-badge">supported</span>
+                </div>
+                <p class="stage-9-verdict-desc" id="stage-9-verdict-desc">
+                  <!-- Explanation -->
+                </p>
+              </div>
+
+              <!-- Settings & Window Summary Card -->
+              <div class="content-card stage-9-settings-card" id="stage-9-settings-card">
+                <div class="content-card-header">
+                  <h3 class="card-title">Simulation Parameters & Window</h3>
+                </div>
+                <div class="stage-9-params-grid">
+                  <div class="param-item">
+                    <span class="param-label">Holding Period (H):</span>
+                    <span class="param-value" id="stage-9-param-h">20 sessions</span>
+                  </div>
+                  <div class="param-item">
+                    <span class="param-label">Exit Threshold:</span>
+                    <span class="param-value" id="stage-9-param-exit">60 RSI</span>
+                  </div>
+                  <div class="param-item">
+                    <span class="param-label">Cadence:</span>
+                    <span class="param-value" id="stage-9-param-cadence">5 sessions</span>
+                  </div>
+                  <div class="param-item">
+                    <span class="param-label">Window Dates:</span>
+                    <span class="param-value" id="stage-9-param-window">--</span>
+                  </div>
+                  <div class="param-item">
+                    <span class="param-label">Aligned Sessions:</span>
+                    <span class="param-value" id="stage-9-param-sessions">--</span>
+                  </div>
+                  <div class="param-item">
+                    <span class="param-label">Constraining Ticker(s):</span>
+                    <span class="param-value font-mono" id="stage-9-param-constraining">--</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Middle Row: Counts & Attribution Cards -->
+            <div class="stage-9-mid-grid">
+              <!-- Counts Card -->
+              <div class="content-card" id="stage-9-counts-card">
+                <div class="content-card-header">
+                  <h3 class="card-title">Execution Counts</h3>
+                </div>
+                <div class="counts-metrics-grid">
+                  <div class="count-metric-box">
+                    <span class="count-val" id="stage-9-count-evaluated">0</span>
+                    <span class="count-lbl">Evaluated Entry Dates</span>
+                  </div>
+                  <div class="count-metric-box">
+                    <span class="count-val" id="stage-9-count-nonoverlapping">0</span>
+                    <span class="count-lbl">Non-Overlapping Entries</span>
+                  </div>
+                  <div class="count-metric-box">
+                    <span class="count-val" id="stage-9-count-traded">0</span>
+                    <span class="count-lbl">Traded Entries</span>
+                  </div>
+                  <div class="count-metric-box">
+                    <span class="count-val" id="stage-9-count-notrade">0</span>
+                    <span class="count-lbl">No-Trade Dates</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Attribution Card -->
+              <div class="content-card" id="stage-9-attribution-card">
+                <div class="content-card-header">
+                  <h3 class="card-title">Performance Attributions</h3>
+                </div>
+                <div class="attribution-items-grid">
+                  <div class="attribution-box">
+                    <div class="attribution-title">Screen Effect</div>
+                    <div class="attribution-subtitle">Screened Equal Weight minus Unscreened</div>
+                    <div class="attribution-stats">
+                      <div><span class="stat-lbl">Mean:</span> <span class="stat-num" id="stage-9-screen-mean">--</span></div>
+                      <div><span class="stat-lbl">Hit Rate:</span> <span class="stat-num" id="stage-9-screen-hitrate">--</span></div>
+                    </div>
+                  </div>
+                  <div class="attribution-box">
+                    <div class="attribution-title">Optimizer Effect</div>
+                    <div class="attribution-subtitle">Minimum Variance minus Screened Equal Weight</div>
+                    <div class="attribution-stats">
+                      <div><span class="stat-lbl">Mean:</span> <span class="stat-num" id="stage-9-optimizer-mean">--</span></div>
+                      <div><span class="stat-lbl">Hit Rate:</span> <span class="stat-num" id="stage-9-optimizer-hitrate">--</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Summary Table -->
+            <div class="content-card" id="stage-9-summary-card">
+              <div class="content-card-header">
+                <h3 class="card-title">Walk-Forward Basket Summary</h3>
+                <p class="card-subtitle">Out-of-sample forward performance over all traded dates</p>
+              </div>
+              <div class="table-responsive">
+                <table class="data-table" id="stage-9-summary-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Basket / Method</th>
+                      <th scope="col">Trades</th>
+                      <th scope="col">Mean Forward Return</th>
+                      <th scope="col">Median Forward Return</th>
+                      <th scope="col">Hit Rate vs SPY</th>
+                      <th scope="col">Worst Forward Return</th>
+                      <th scope="col">Mean Max Drawdown</th>
+                    </tr>
+                  </thead>
+                  <tbody id="stage-9-summary-tbody">
+                    <!-- Dynamic summary rows -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Expandable Trades and Reasons Table -->
+            <div class="content-card" id="stage-9-trades-card">
+              <details class="trades-details" id="stage-9-trades-details">
+                <summary class="trades-summary">
+                  <span class="trades-summary-title">Trades and Reasons</span>
+                  <span class="badge" id="stage-9-trades-count-badge">0 dates</span>
+                </summary>
+                <div class="table-responsive mt-3">
+                  <table class="data-table font-mono-cells" id="stage-9-trades-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Date</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Survivors</th>
+                        <th scope="col">Exit Session / Offset</th>
+                        <th scope="col">Min Var Return</th>
+                        <th scope="col">Screened EW Return</th>
+                        <th scope="col">SPY Return</th>
+                        <th scope="col">Reason / Details</th>
+                      </tr>
+                    </thead>
+                    <tbody id="stage-9-trades-tbody">
+                      <!-- Dynamic rows -->
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </div>
+
+            <!-- Limitations Card -->
+            <div class="content-card limitations-card" id="stage-9-limitations-card">
+              <div class="content-card-header">
+                <div class="limitations-header-title">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-amber-500" aria-hidden="true">
+                    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+                    <line x1="12" y1="9" x2="12" y2="13"></line>
+                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                  </svg>
+                  <h3 class="card-title">Methodological Limitations</h3>
+                </div>
+              </div>
+              <ul class="limitations-list">
+                <li id="stage-9-limitation-survivorship">
+                  <strong>Survivorship bias:</strong> Evaluated using current index constituents rather than point-in-time membership.
+                </li>
+                <li id="stage-9-limitation-regime">
+                  <strong>Single-regime risk:</strong> Three-year backtest window covers a limited set of macroeconomic regimes.
+                </li>
+              </ul>
             </div>
           </div>
         </div>

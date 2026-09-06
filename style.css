@@ -4464,6 +4464,327 @@ tr.signal-drilldown-row td {
   font-size: 14px;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Stage 9: Walk-Forward Backtest Styles                                      */
+/* -------------------------------------------------------------------------- */
+
+.stage-9-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 14px 18px;
+  background: var(--apple-card-bg, #ffffff);
+  border: 1px solid var(--apple-border, #e2e8f0);
+  border-radius: 10px;
+}
+
+.stage-9-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.stage-9-progress-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  max-width: 380px;
+}
+
+.stage-9-progress-bar {
+  flex: 1;
+  height: 8px;
+  background: var(--apple-bg-subtle, #f1f5f9);
+  border-radius: 9999px;
+  overflow: hidden;
+  border: 1px solid var(--apple-border, #e2e8f0);
+}
+
+.stage-9-progress-fill {
+  height: 100%;
+  background: var(--apple-accent, #2563eb);
+  border-radius: 9999px;
+  transition: width 0.15s ease-out;
+}
+
+.stage-9-progress-text {
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: var(--apple-text-secondary, #64748b);
+  min-width: 90px;
+}
+
+.stage-9-top-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+@media (min-width: 840px) {
+  .stage-9-top-grid {
+    grid-template-columns: 1.1fr 1fr;
+  }
+}
+
+.stage-9-mid-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+@media (min-width: 840px) {
+  .stage-9-mid-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.stage-9-verdict-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.badge-verdict-supported {
+  background: #f0fdf4 !important;
+  color: #166534 !important;
+  border: 1px solid #bbf7d0 !important;
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  padding: 4px 10px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+}
+
+.badge-verdict-notsupported {
+  background: #fffbeb !important;
+  color: #92400e !important;
+  border: 1px solid #fde68a !important;
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  padding: 4px 10px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+}
+
+.stage-9-verdict-desc {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--apple-text-secondary, #475569);
+  margin-top: 10px;
+}
+
+.stage-9-params-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 16px;
+  margin-top: 12px;
+}
+
+.param-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.param-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--apple-text-secondary, #64748b);
+}
+
+.param-value {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--apple-text-primary, #0f172a);
+}
+
+.counts-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+@media (min-width: 520px) {
+  .counts-metrics-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.count-metric-box {
+  background: var(--apple-bg-subtle, #f8fafc);
+  border: 1px solid var(--apple-border, #e2e8f0);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.count-val {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--apple-text-primary, #0f172a);
+  font-family: var(--font-mono, monospace);
+  line-height: 1.2;
+}
+
+.count-lbl {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--apple-text-secondary, #64748b);
+  margin-top: 4px;
+}
+
+.attribution-items-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+@media (min-width: 480px) {
+  .attribution-items-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.attribution-box {
+  background: var(--apple-bg-subtle, #f8fafc);
+  border: 1px solid var(--apple-border, #e2e8f0);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.attribution-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--apple-text-primary, #0f172a);
+}
+
+.attribution-subtitle {
+  font-size: 11px;
+  color: var(--apple-text-secondary, #64748b);
+  margin-bottom: 8px;
+}
+
+.attribution-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.stat-lbl {
+  font-weight: 600;
+  color: var(--apple-text-secondary, #64748b);
+}
+
+.stat-num {
+  font-family: var(--font-mono, monospace);
+  font-weight: 700;
+  color: var(--apple-text-primary, #0f172a);
+}
+
+.trades-details {
+  cursor: pointer;
+}
+
+.trades-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: 14px;
+  user-select: none;
+  padding: 4px 0;
+}
+
+.trades-summary-title {
+  color: var(--apple-text-primary, #0f172a);
+}
+
+.limitations-card {
+  background: #fffbeb !important;
+  border: 1px solid #fde68a !important;
+  margin-top: 18px;
+}
+
+.limitations-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.limitations-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  color: #78350f;
+  line-height: 1.5;
+}
+
+.limitations-list li {
+  position: relative;
+  padding-left: 18px;
+}
+
+.limitations-list li::before {
+  content: "•";
+  position: absolute;
+  left: 4px;
+  font-weight: bold;
+  color: #b45309;
+}
+
+/* Out of sample comparison columns */
+.col-oos {
+  background-color: rgba(37, 99, 235, 0.04);
+}
+
+.cell-stale {
+  opacity: 0.6;
+  position: relative;
+}
+
+.badge-stale {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  padding: 1px 4px;
+  border-radius: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.badge-not-candidate {
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--apple-bg-subtle, #f1f5f9);
+  color: var(--apple-text-secondary, #64748b);
+  border: 1px solid var(--apple-border, #e2e8f0);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+
 
 
 

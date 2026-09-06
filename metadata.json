@@ -1,6 +1,6 @@
 {
   "name": "GenAI Finance App",
-  "description": "Eight-stage quantitative portfolio pipeline with real-time stage tracking and in-memory state architecture.",
+  "description": "Nine-stage quantitative portfolio pipeline with walk-forward backtesting, real-time stage tracking, and in-memory state architecture.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

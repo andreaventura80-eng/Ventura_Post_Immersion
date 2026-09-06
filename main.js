@@ -61,7 +61,8 @@ export const STAGES = [
   { id: 5, name: "Text gate", shortName: "Text gate" },
   { id: 6, name: "Minimum variance", shortName: "Min variance" },
   { id: 7, name: "Guardrails and review", shortName: "Guardrails" },
-  { id: 8, name: "Portfolio and note", shortName: "Portfolio & note" }
+  { id: 8, name: "Portfolio and note", shortName: "Portfolio & note" },
+  { id: 9, name: "Walk-forward backtest", shortName: "Backtest" }
 ];
 
 export const INDICATOR_CONSTANTS = Object.freeze({
@@ -85,7 +86,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   investmentAmount: 1000000,
   riskFreeRate: 0.0391,
   creditsPerMinute: 144,
-  openRouterModel: DEFAULT_OPENROUTER_MODEL
+  openRouterModel: DEFAULT_OPENROUTER_MODEL,
+  holdingPeriod: 20,
+  exitThreshold: 60,
+  cadence: 5
 });
 
 // Central application state with named slots for all pipeline stages
@@ -121,6 +125,7 @@ export const appState = {
   note: null,
   notePostCheck: null,
   reviewed: false,
+  backtest: null,
   stageStatus: {
     1: "idle",
     2: "idle",
@@ -129,7 +134,8 @@ export const appState = {
     5: "idle",
     6: "idle",
     7: "idle",
-    8: "idle"
+    8: "idle",
+    9: "idle"
   }
 };
 
@@ -150,53 +156,64 @@ initDefaultUniverse();
 /**
  * Updates the status of a specific stage.
  * Rejects any status string outside the five allowed values.
+ * Stage 9 is never blocked; if an upstream stage is blocked or fails, stage 9 remains idle.
  *
- * @param {number|string} stage - Stage number (1 to 8)
+ * @param {number|string} stage - Stage number (1 to 9)
  * @param {string} status - One of "idle", "running", "done", "stale", "blocked"
  * @returns {boolean} True if successfully applied
  */
 export function setStageStatus(stage, status) {
   const stageNum = Number(stage);
-  const isValidStageNum = Number.isInteger(stageNum) === true && stageNum >= 1 && stageNum <= 8;
+  const isValidStageNum = Number.isInteger(stageNum) === true && stageNum >= 1 && stageNum <= 9;
   if (isValidStageNum === false) {
-    const errorMsg = `Stage number "${stage}" is invalid. Expected an integer between 1 and 8.`;
+    const errorMsg = `Stage number "${stage}" is invalid. Expected an integer between 1 and 9.`;
     console.error(errorMsg);
     throw new Error(errorMsg);
   }
 
-  const statusIsAllowed = ALLOWED_STATUSES.includes(status);
+  // Stage 9 is never blocked: if blocked is requested, set to idle
+  let effectiveStatus = status;
+  if (stageNum === 9 && status === "blocked") {
+    effectiveStatus = "idle";
+  }
+
+  const statusIsAllowed = ALLOWED_STATUSES.includes(effectiveStatus);
   if (statusIsAllowed === true) {
-    appState.stageStatus[stageNum] = status;
+    appState.stageStatus[stageNum] = effectiveStatus;
     updateStageUI(stageNum);
     return true;
   } else {
-    const errorMsg = `Status "${status}" is rejected. Allowed statuses are: ${ALLOWED_STATUSES.join(", ")}.`;
+    const errorMsg = `Status "${effectiveStatus}" is rejected. Allowed statuses are: ${ALLOWED_STATUSES.join(", ")}.`;
     console.error(errorMsg);
     throw new Error(errorMsg);
   }
 }
 
 /**
- * Marks stages from fromStage to 8 as "stale", unless a stage is currently "blocked".
+ * Marks stages from fromStage to 9 as "stale", unless a stage is currently "blocked".
  *
- * @param {number|string} fromStage - Starting stage number (1 to 8)
+ * @param {number|string} fromStage - Starting stage number (1 to 9)
  * @returns {boolean} True if execution completed
  */
 export function markStagesStale(fromStage) {
   const startNum = Number(fromStage);
-  const isValidStageNum = Number.isInteger(startNum) === true && startNum >= 1 && startNum <= 8;
+  const isValidStageNum = Number.isInteger(startNum) === true && startNum >= 1 && startNum <= 9;
   if (isValidStageNum === false) {
-    const errorMsg = `Stage number "${fromStage}" is invalid. Expected an integer between 1 and 8.`;
+    const errorMsg = `Stage number "${fromStage}" is invalid. Expected an integer between 1 and 9.`;
     console.warn(errorMsg);
     return false;
   }
 
-  for (let s = startNum; s <= 8; s += 1) {
+  for (let s = startNum; s <= 9; s += 1) {
     const isBlocked = appState.stageStatus[s] === "blocked";
     if (isBlocked === true) {
       // Leaves a stage that was blocked as blocked
       continue;
     } else {
+      // If stage 9 has never run (idle), keep it idle rather than stale
+      if (s === 9 && appState.stageStatus[9] === "idle") {
+        continue;
+      }
       appState.stageStatus[s] = "stale";
       updateStageUI(s);
     }
@@ -1009,6 +1026,10 @@ export function validateAndSetWeightCap(rawInput) {
   updatePreflightCard();
   clearReview();
 
+  if (appState.stageStatus[9] === "done") {
+    setStageStatus(9, "stale");
+  }
+
   const hasGated = Array.isArray(appState.gatedSurvivors) === true && appState.gatedSurvivors.length > 0;
   const isStage5Done = appState.stageStatus[5] === "done";
   if (hasGated === true && isStage5Done === true) {
@@ -1059,6 +1080,10 @@ export function validateAndSetMinimumBreadth(rawInput) {
   renderSettingsUI();
   updatePreflightCard();
   clearReview();
+
+  if (appState.stageStatus[9] === "done") {
+    setStageStatus(9, "stale");
+  }
 
   const hasScreenResult = appState.screenResult !== null && typeof appState.screenResult === "object";
   if (hasScreenResult === true) {
@@ -1137,6 +1162,17 @@ export function validateAndSetRsiThreshold(rawInput) {
     return false;
   }
 
+  const currentExitThreshold = Number.isFinite(appState.settings.exitThreshold) === true
+    ? appState.settings.exitThreshold
+    : 60;
+  if (currentExitThreshold < num + 10) {
+    showSettingsError(
+      `Cross-field rule violated: exit threshold (${currentExitThreshold}) must be at least 10 points above RSI threshold as set (${num}). Please raise the exit threshold first.`
+    );
+    renderSettingsUI();
+    return false;
+  }
+
   const previousSurvivors = appState.screenResult !== null && typeof appState.screenResult === "object" && Array.isArray(appState.screenResult.survivors) === true
     ? [...appState.screenResult.survivors]
     : [];
@@ -1150,6 +1186,10 @@ export function validateAndSetRsiThreshold(rawInput) {
   renderSettingsUI();
   updatePreflightCard();
   clearReview();
+
+  if (appState.stageStatus[9] === "done") {
+    setStageStatus(9, "stale");
+  }
 
   const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
   if (hasIndicators === true) {
@@ -1192,12 +1232,118 @@ export function validateAndSetHistogramLookback(rawInput) {
   renderMacdPanelUI();
   clearReview();
 
+  if (appState.stageStatus[9] === "done") {
+    setStageStatus(9, "stale");
+  }
+
   const hasIndicators = appState.indicatorSeries !== null && typeof appState.indicatorSeries === "object";
   if (hasIndicators === true) {
     runStage4Screen(previousSurvivors);
   }
   evaluateGuardrails();
   renderStage7UI();
+
+  return true;
+}
+
+/**
+ * Validates and updates the walk-forward backtest holding period (H).
+ * Range: integer 5 to 60 sessions. Default 20.
+ * Marks stage 9 stale but marks no other stage stale and does not clear review.
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetHoldingPeriod(rawInput) {
+  const clean = String(rawInput).trim();
+  const isInt = /^-?\d+$/.test(clean) === true;
+  const num = parseInt(clean, 10);
+  const inRange = isInt === true && num >= 5 && num <= 60;
+  if (inRange === false) {
+    showSettingsError(`Holding period (H) must be an integer between 5 and 60 sessions (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  appState.settings.holdingPeriod = num;
+  clearSettingsError();
+  renderSettingsUI();
+
+  if (appState.stageStatus[9] === "done") {
+    setStageStatus(9, "stale");
+  }
+
+  return true;
+}
+
+/**
+ * Validates and updates the walk-forward backtest exit threshold setting.
+ * Range: integer 50 to 80. Default 60.
+ * Cross-field rule: must be at least 10 points above RSI threshold as set.
+ * Marks stage 9 stale but marks no other stage stale and does not clear review.
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetExitThreshold(rawInput) {
+  const clean = String(rawInput).trim();
+  const isInt = /^-?\d+$/.test(clean) === true;
+  const num = parseInt(clean, 10);
+  const inRange = isInt === true && num >= 50 && num <= 80;
+  if (inRange === false) {
+    showSettingsError(`Exit threshold must be an integer between 50 and 80 (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  const currentRsi = Number.isFinite(appState.settings.rsiThreshold) === true
+    ? appState.settings.rsiThreshold
+    : 40;
+  if (num < currentRsi + 10) {
+    showSettingsError(
+      `Cross-field rule violated: exit threshold (${num}) must be at least 10 points above RSI threshold as set (${currentRsi}).`
+    );
+    renderSettingsUI();
+    return false;
+  }
+
+  appState.settings.exitThreshold = num;
+  clearSettingsError();
+  renderSettingsUI();
+
+  if (appState.stageStatus[9] === "done") {
+    setStageStatus(9, "stale");
+  }
+
+  return true;
+}
+
+/**
+ * Validates and updates the walk-forward backtest cadence setting.
+ * Range: integer 1 to 21 sessions. Default 5.
+ * Marks stage 9 stale but marks no other stage stale and does not clear review.
+ *
+ * @param {string|number} rawInput
+ * @returns {boolean} True if accepted
+ */
+export function validateAndSetCadence(rawInput) {
+  const clean = String(rawInput).trim();
+  const isInt = /^-?\d+$/.test(clean) === true;
+  const num = parseInt(clean, 10);
+  const inRange = isInt === true && num >= 1 && num <= 21;
+  if (inRange === false) {
+    showSettingsError(`Cadence must be an integer between 1 and 21 sessions (entered "${rawInput}").`);
+    renderSettingsUI();
+    return false;
+  }
+
+  appState.settings.cadence = num;
+  clearSettingsError();
+  renderSettingsUI();
+
+  if (appState.stageStatus[9] === "done") {
+    setStageStatus(9, "stale");
+  }
 
   return true;
 }
@@ -1536,6 +1682,19 @@ export function getOneYearAgoDateString(date = new Date()) {
   const todayNY = getTodayNYDateString(date);
   const parts = todayNY.split("-");
   const prevYear = parseInt(parts[0], 10) - 1;
+  return `${prevYear}-${parts[1]}-${parts[2]}`;
+}
+
+/**
+ * Returns the date three years before today in America/New_York (YYYY-MM-DD).
+ *
+ * @param {Date} [date]
+ * @returns {string}
+ */
+export function getThreeYearsAgoDateString(date = new Date()) {
+  const todayNY = getTodayNYDateString(date);
+  const parts = todayNY.split("-");
+  const prevYear = parseInt(parts[0], 10) - 3;
   return `${prevYear}-${parts[1]}-${parts[2]}`;
 }
 
@@ -2070,9 +2229,14 @@ export function alignAndCompleteStage2() {
     return;
   }
 
+  // The live stages (1 to 8) continue to use only the trailing one-year window (up to 252 sessions) from this fetch.
+  // Outputs remain bit-for-bit identical to previous versions while the full three-year series stays in priceCache for stage 9.
+  const liveWindowSize = Math.min(252, commonDates.length);
+  const finalAlignedDates = commonDates.slice(-liveWindowSize);
+
   // Name the ticker or tickers whose history constrains the intersection
-  const firstDate = commonDates[0];
-  const lastDate = commonDates[commonDates.length - 1];
+  const firstDate = finalAlignedDates[0];
+  const lastDate = finalAlignedDates[finalAlignedDates.length - 1];
   const startConstraining = [];
   const endConstraining = [];
 
@@ -2103,9 +2267,6 @@ export function alignAndCompleteStage2() {
     }
   }
 
-  // Constituents are aligned on their mutual session intersection
-  const finalAlignedDates = commonDates;
-
   // Align SPY on constituent dates (or its own dates) if available; SPY failure never blocks stage 2
   let alignedSpy = null;
   const hasSpyPrices = hasSpyData === true && spyPriceMap.size > 0;
@@ -2120,8 +2281,8 @@ export function alignAndCompleteStage2() {
         spyPrices.push(spyPriceMap.get(d));
       }
     }
-    const hasOverlap = spyDates.length > 0;
-    if (hasOverlap === true) {
+    const hasOverlapSpy = spyDates.length > 0;
+    if (hasOverlapSpy === true) {
       alignedSpy = {
         dates: spyDates,
         prices: spyPrices
@@ -2153,12 +2314,16 @@ export function alignAndCompleteStage2() {
   };
 
   // Update status and notes for each valid constituent
+  // Distinguish between insufficient history for backtest (< 500) and fully admitted (>= 500)
   for (let i = 0; i < validConstituents.length; i += 1) {
     const t = validConstituents[i];
+    const series = appState.priceCache[t] || [];
     const isStart = startConstraining.includes(t) === true;
     const isEnd = endConstraining.includes(t) === true;
     let note = "Aligned";
-    if (isStart === true && isEnd === true) {
+    if (series.length < 500) {
+      note = `insufficient history for backtest (${series.length} sessions)`;
+    } else if (isStart === true && isEnd === true) {
       note = "Constrains start and end dates";
     } else if (isStart === true) {
       note = "Constrains start date";
@@ -2178,13 +2343,17 @@ export function alignAndCompleteStage2() {
   // Update SPY status (diagnostic only, absent SPY never blocks stages)
   const hasAlignedSpy = alignedSpy !== null && Array.isArray(alignedSpy.dates) === true && alignedSpy.dates.length > 0;
   if (hasAlignedSpy === true) {
+    let spyNote = "Benchmark (joined to aligned dates)";
+    if (spySeries.length < 500) {
+      spyNote = `Benchmark (${spySeries.length} sessions - insufficient for backtest)`;
+    }
     setTickerPriceStatus(
       "SPY",
       "done",
       "",
       alignedSpy.dates.length,
       `${alignedSpy.dates[0]} → ${alignedSpy.dates[alignedSpy.dates.length - 1]}`,
-      "Benchmark (joined to aligned dates)"
+      spyNote
     );
   } else {
     setTickerPriceStatus(
@@ -2291,9 +2460,9 @@ export async function runPriceFetchAndAlignment(isRefresh = false) {
   renderRawPricesTable();
 
   const apiKey = (appState.keys.twelveData || "").trim();
-  const startDate = getOneYearAgoDateString();
+  const startDate = getThreeYearsAgoDateString();
   const symbolsParam = missingTickers.join(",");
-  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbolsParam)}&interval=1day&start_date=${startDate}&order=asc&adjust=all&apikey=${encodeURIComponent(apiKey)}`;
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbolsParam)}&interval=1day&start_date=${startDate}&outputsize=800&order=asc&adjust=all&apikey=${encodeURIComponent(apiKey)}`;
 
   let response;
   try {
@@ -7350,6 +7519,22 @@ export function renderSettingsUI() {
   if (modelInput !== null && document.activeElement !== modelInput) {
     modelInput.value = appState.settings.openRouterModel || DEFAULT_OPENROUTER_MODEL;
   }
+
+  // Backtest settings
+  const holdingInput = document.getElementById("setting-holding-period");
+  if (holdingInput !== null && document.activeElement !== holdingInput) {
+    holdingInput.value = String(appState.settings.holdingPeriod || 20);
+  }
+
+  const exitInput = document.getElementById("setting-exit-threshold");
+  if (exitInput !== null && document.activeElement !== exitInput) {
+    exitInput.value = String(appState.settings.exitThreshold || 60);
+  }
+
+  const cadenceInput = document.getElementById("setting-cadence");
+  if (cadenceInput !== null && document.activeElement !== cadenceInput) {
+    cadenceInput.value = String(appState.settings.cadence || 5);
+  }
 }
 
 /**
@@ -7449,6 +7634,30 @@ export function setupSettingsPanel() {
     });
     modelInput.addEventListener("change", (e) => {
       validateAndSetOpenRouterModel(e.target.value);
+    });
+  }
+
+  // Backtest: Holding Period
+  const holdingInput = document.getElementById("setting-holding-period");
+  if (holdingInput !== null) {
+    holdingInput.addEventListener("change", (e) => {
+      validateAndSetHoldingPeriod(e.target.value);
+    });
+  }
+
+  // Backtest: Exit Threshold
+  const exitInput = document.getElementById("setting-exit-threshold");
+  if (exitInput !== null) {
+    exitInput.addEventListener("change", (e) => {
+      validateAndSetExitThreshold(e.target.value);
+    });
+  }
+
+  // Backtest: Cadence
+  const cadenceInput = document.getElementById("setting-cadence");
+  if (cadenceInput !== null) {
+    cadenceInput.addEventListener("change", (e) => {
+      validateAndSetCadence(e.target.value);
     });
   }
 
@@ -10247,7 +10456,8 @@ export function generateExportData(state = appState) {
       problems: Array.isArray(state.notePostCheck.problems) ? state.notePostCheck.problems : [],
       failures: Array.isArray(state.notePostCheck.failures) ? state.notePostCheck.failures : [],
       wordCount: typeof state.notePostCheck.wordCount === "number" ? state.notePostCheck.wordCount : 0
-    } : null
+    } : null,
+    backtest: state.backtest !== null ? state.backtest : null
   };
 
   return exportObj;
@@ -10512,14 +10722,15 @@ Every figure mentioned must appear verbatim in the input payload.
 The settings used govern wherever they differ from the thresholds named in the thesis statement.
 Every number must be written exactly as given, not rounded, not rescaled ("1,000,000", never "1 million"), and not spelled out in words.
 
-The note follows a fixed four-part structure written in continuous prose mirroring the investor's screens:
+The note follows a fixed structure written in continuous prose mirroring the investor's screens:
 Part 1: Which names were kept and, in exclude mode, which Headwind names were dropped and why, or, in warn mode, which Headwind names were kept with a warning and why.
 Part 2: How weight was distributed, stating the investment amount and the largest dollar positions.
 Part 3: How minimum variance compares with the two benchmarks.
 Part 4: The two largest risks.
+When backtest figures are present in the payload, state whether the walk-forward evidence supports the thesis (naming the screen effect and optimizer effect from the payload) and include the two limitations; when backtest figures are absent, state that the backtest was omitted.
 
 Constraints:
-- Under 350 words total.
+- Under 400 words total.
 - No bullet points, headings, or lists. Write continuous prose paragraphs.`;
 
 /**
@@ -10734,6 +10945,25 @@ export function buildNotePayload(state = appState) {
     status: betaStatusStr
   };
 
+  let backtestPayload = null;
+  const hasBacktest = state.backtest !== null && typeof state.backtest === "object";
+  if (hasBacktest === true) {
+    backtestPayload = {
+      verdict: state.backtest.verdict,
+      holdingPeriod: `${state.backtest.settings.holdingPeriod} sessions`,
+      exitThreshold: `${state.backtest.settings.exitThreshold}`,
+      cadence: `${state.backtest.settings.cadence} sessions`,
+      screenEffectMean: formatPercentage(state.backtest.attribution.screenEffect.mean),
+      screenEffectHitRate: formatPercentage(state.backtest.attribution.screenEffect.hitRate),
+      optimizerEffectMean: formatPercentage(state.backtest.attribution.optimizerEffect.mean),
+      optimizerEffectHitRate: formatPercentage(state.backtest.attribution.optimizerEffect.hitRate),
+      limitations: [
+        "Survivorship bias: Evaluated using current index constituents rather than point-in-time membership.",
+        "Single-regime risk: Three-year backtest window covers a limited set of macroeconomic regimes."
+      ]
+    };
+  }
+
   const payload = {
     thesisStatement: THESIS_STATEMENT,
     investmentAmount: formatWholeDollars(inv),
@@ -10747,7 +10977,8 @@ export function buildNotePayload(state = appState) {
     weightsAndAllocations: weightsAndAllocations,
     portfolioMetrics: portfolioMetrics,
     sectorConcentration: sectorExposures,
-    rollingBeta: rollingBeta
+    rollingBeta: rollingBeta,
+    backtest: backtestPayload
   };
 
   state.notePayload = payload;
@@ -11490,6 +11721,96 @@ export function renderStage8UI() {
     const maxDollarsIV = ivAllocsArr.length > 0 ? Math.max(...ivAllocsArr) : 0;
     const isIVFeasible = iv.feasible === true;
 
+    // Compute in-sample metrics for SPY over the aligned window
+    let spyISRet = 0;
+    let spyISVol = 0;
+    let spyISSharpe = 0;
+    const hasAlignedSpyPrices = appState.alignedData && appState.alignedData.spy && Array.isArray(appState.alignedData.spy.prices) && appState.alignedData.spy.prices.length >= 2;
+    if (hasAlignedSpyPrices === true) {
+      const sp = appState.alignedData.spy.prices;
+      const rets = [];
+      for (let i = 1; i < sp.length; i += 1) {
+        if (sp[i - 1] > 0) {
+          rets.push((sp[i] - sp[i - 1]) / sp[i - 1]);
+        }
+      }
+      if (rets.length > 0) {
+        const meanR = rets.reduce((a, b) => a + b, 0) / rets.length;
+        spyISRet = meanR * 252;
+        const varR = rets.reduce((a, b) => a + Math.pow(b - meanR, 2), 0) / (rets.length - 1 || 1);
+        spyISVol = Math.sqrt(varR) * Math.sqrt(252);
+        const rf = typeof appState.settings.riskFreeRate === "number" ? appState.settings.riskFreeRate : 0.0391;
+        spyISSharpe = spyISVol > 0 ? (spyISRet - rf) / spyISVol : 0;
+      }
+    }
+
+    // Compute in-sample metrics for unscreened basket over aligned window
+    let basketISRet = 0;
+    let basketISVol = 0;
+    let basketISSharpe = 0;
+    let basketMaxWeight = 0;
+    let basketMaxDollars = 0;
+    const hasAlignedConstituentPrices = appState.alignedData && appState.alignedData.prices && typeof appState.alignedData.prices === "object";
+    if (hasAlignedConstituentPrices === true) {
+      const symbols = Object.keys(appState.alignedData.prices);
+      const dateCount = appState.alignedData.dates ? appState.alignedData.dates.length : 0;
+      if (symbols.length > 0 && dateCount >= 2) {
+        const basketDailyRets = [];
+        for (let d = 1; d < dateCount; d += 1) {
+          let sumDayRet = 0;
+          let validCount = 0;
+          for (let s = 0; s < symbols.length; s += 1) {
+            const sym = symbols[s];
+            const pArr = appState.alignedData.prices[sym];
+            if (pArr && pArr[d - 1] > 0) {
+              sumDayRet += (pArr[d] - pArr[d - 1]) / pArr[d - 1];
+              validCount += 1;
+            }
+          }
+          if (validCount > 0) {
+            basketDailyRets.push(sumDayRet / validCount);
+          }
+        }
+        if (basketDailyRets.length > 0) {
+          const meanBR = basketDailyRets.reduce((a, b) => a + b, 0) / basketDailyRets.length;
+          basketISRet = meanBR * 252;
+          const varBR = basketDailyRets.reduce((a, b) => a + Math.pow(b - meanBR, 2), 0) / (basketDailyRets.length - 1 || 1);
+          basketISVol = Math.sqrt(varBR) * Math.sqrt(252);
+          const rf = typeof appState.settings.riskFreeRate === "number" ? appState.settings.riskFreeRate : 0.0391;
+          basketISSharpe = basketISVol > 0 ? (basketISRet - rf) / basketISVol : 0;
+          basketMaxWeight = 1 / symbols.length;
+          const inv = typeof appState.settings.investmentAmount === "number" ? appState.settings.investmentAmount : 1000000;
+          basketMaxDollars = inv / symbols.length;
+        }
+      }
+    }
+
+    // Out-of-sample columns state
+    const hasBacktest = appState.backtest !== null && typeof appState.backtest === "object";
+    const isStage9Stale = appState.stageStatus[9] === "stale";
+    const btSummary = hasBacktest === true ? appState.backtest.summary : null;
+
+    const thOosRet = document.getElementById("col-header-oos-ret");
+    const thOosHit = document.getElementById("col-header-oos-hit");
+    if (thOosRet !== null && thOosHit !== null) {
+      if (hasBacktest === true) {
+        thOosRet.classList.remove("hidden");
+        thOosHit.classList.remove("hidden");
+        if (isStage9Stale === true) {
+          thOosRet.innerHTML = `Mean Forward Return (out-of-sample) <span class="badge-stale">Stale</span>`;
+          thOosHit.innerHTML = `Hit Rate vs SPY (out-of-sample) <span class="badge-stale">Stale</span>`;
+        } else {
+          thOosRet.textContent = "Mean Forward Return (out-of-sample)";
+          thOosHit.textContent = "Hit Rate vs SPY (out-of-sample)";
+        }
+      } else {
+        thOosRet.classList.add("hidden");
+        thOosHit.classList.add("hidden");
+      }
+    }
+
+    const staleCellClass = isStage9Stale === true ? ' class="oos-cell cell-stale"' : ' class="oos-cell"';
+
     comparisonTbody.innerHTML = `
       <tr id="stage-8-row-min-variance">
         <td>
@@ -11508,6 +11829,10 @@ export function renderStage8UI() {
         </td>
         <td>${formatPercentage(maxWeightMV)}</td>
         <td style="font-weight: 600; color: #0f172a;">${formatWholeDollars(maxDollarsMV)}</td>
+        ${hasBacktest === true ? `
+          <td${staleCellClass}>${formatPercentage(btSummary.minVariance.meanReturn)}</td>
+          <td${staleCellClass}>${formatPercentage(btSummary.minVariance.hitRateVsSpy)}</td>
+        ` : ""}
       </tr>
       <tr id="stage-8-row-equal-weight">
         <td>
@@ -11526,6 +11851,10 @@ export function renderStage8UI() {
         </td>
         <td>${formatPercentage(maxWeightEW)}</td>
         <td style="font-weight: 600; color: #0f172a;">${formatWholeDollars(maxDollarsEW)}</td>
+        ${hasBacktest === true ? `
+          <td${staleCellClass}>${formatPercentage(btSummary.equalWeight.meanReturn)}</td>
+          <td${staleCellClass}>${formatPercentage(btSummary.equalWeight.hitRateVsSpy)}</td>
+        ` : ""}
       </tr>
       <tr id="stage-8-row-inverse-volatility">
         <td>
@@ -11544,6 +11873,46 @@ export function renderStage8UI() {
         </td>
         <td>${formatPercentage(maxWeightIV)}</td>
         <td style="font-weight: 600; color: #0f172a;">${formatWholeDollars(maxDollarsIV)}</td>
+        ${hasBacktest === true ? `
+          <td${staleCellClass}>${formatPercentage(btSummary.inverseVolatility.meanReturn)}</td>
+          <td${staleCellClass}>${formatPercentage(btSummary.inverseVolatility.hitRateVsSpy)}</td>
+        ` : ""}
+      </tr>
+      <tr id="stage-8-row-spy">
+        <td>
+          <div style="font-weight: 500; color: #334155; display: flex; align-items: center; gap: 8px;">
+            SPY
+            <span class="badge-not-candidate">Not a candidate</span>
+          </div>
+        </td>
+        <td>${formatPercentage(spyISRet)}</td>
+        <td>${formatPercentage(spyISVol)}</td>
+        <td>${formatSharpe(spyISSharpe)}</td>
+        <td><span class="feasible-na">—</span></td>
+        <td>—</td>
+        <td>—</td>
+        ${hasBacktest === true ? `
+          <td${staleCellClass}>${formatPercentage(btSummary.spy.meanReturn)}</td>
+          <td${staleCellClass}>—</td>
+        ` : ""}
+      </tr>
+      <tr id="stage-8-row-unscreened">
+        <td>
+          <div style="font-weight: 500; color: #334155; display: flex; align-items: center; gap: 8px;">
+            Unscreened basket
+            <span class="badge-not-candidate">Not a candidate</span>
+          </div>
+        </td>
+        <td>${formatPercentage(basketISRet)}</td>
+        <td>${formatPercentage(basketISVol)}</td>
+        <td>${formatSharpe(basketISSharpe)}</td>
+        <td><span class="feasible-na">—</span></td>
+        <td>${formatPercentage(basketMaxWeight)}</td>
+        <td>${formatWholeDollars(basketMaxDollars)}</td>
+        ${hasBacktest === true ? `
+          <td${staleCellClass}>${formatPercentage(btSummary.unscreenedBasket.meanReturn)}</td>
+          <td${staleCellClass}>${formatPercentage(btSummary.unscreenedBasket.hitRateVsSpy)}</td>
+        ` : ""}
       </tr>
     `;
   }
@@ -11837,6 +12206,447 @@ export function setupStage8() {
   }
 }
 
+/**
+ * Formats a signed decimal return as a percentage (e.g., +2.45% or -1.10%).
+ *
+ * @param {number} val
+ * @returns {string}
+ */
+export function formatSignedPercent(val) {
+  if (typeof val !== "number" || isNaN(val) === true) {
+    return "—";
+  }
+  const pct = (val * 100).toFixed(2);
+  return (val > 0 ? "+" : "") + pct + "%";
+}
+
+/**
+ * Displays an alert banner in Stage 9.
+ *
+ * @param {string} message
+ * @param {"error"|"warning"|"info"|"success"} [type="error"]
+ */
+export function showStage9Alert(message, type = "error") {
+  const alertEl = document.getElementById("stage-9-alert");
+  if (alertEl !== null) {
+    alertEl.textContent = message;
+    alertEl.className = `alert alert-${type}`;
+    alertEl.classList.remove("hidden");
+  }
+}
+
+/**
+ * Clears the Stage 9 alert banner.
+ */
+export function clearStage9Alert() {
+  const alertEl = document.getElementById("stage-9-alert");
+  if (alertEl !== null) {
+    alertEl.textContent = "";
+    alertEl.classList.add("hidden");
+  }
+}
+
+let backtestWorkerInstance = null;
+
+/**
+ * Cleans up worker instance and resets UI progress elements.
+ */
+function cleanUpBacktestWorker() {
+  if (backtestWorkerInstance !== null) {
+    backtestWorkerInstance.terminate();
+    backtestWorkerInstance = null;
+  }
+  const progressContainer = document.getElementById("backtest-progress-container");
+  if (progressContainer !== null) {
+    progressContainer.classList.add("hidden");
+  }
+  const runBtn = document.getElementById("btn-run-backtest");
+  if (runBtn !== null) {
+    runBtn.classList.remove("hidden");
+  }
+  const cancelBtn = document.getElementById("btn-cancel-backtest");
+  if (cancelBtn !== null) {
+    cancelBtn.classList.add("hidden");
+  }
+}
+
+/**
+ * Cancels active backtest execution.
+ */
+export function cancelBacktest() {
+  cleanUpBacktestWorker();
+  setStageStatus(9, appState.backtest !== null ? "done" : "idle");
+  showStage9Alert("Backtest simulation cancelled by user.", "warning");
+}
+
+/**
+ * Starts the walk-forward backtest by spawning the dedicated Web Worker.
+ */
+export function startBacktest() {
+  const isStage2Done = appState.stageStatus[2] === "done";
+  if (isStage2Done === false) {
+    showStage9Alert("Stage 2 price alignment must complete before running backtest.", "error");
+    return;
+  }
+
+  const spySeries = appState.priceCache["SPY"] || [];
+  const isSpySufficient = Array.isArray(spySeries) === true && spySeries.length >= 500;
+  if (isSpySufficient === false) {
+    showStage9Alert(`SPY has ${spySeries.length} sessions. At least 500 sessions are required for the backtest benchmark.`, "error");
+    return;
+  }
+
+  const eligibleConstituents = (appState.selectedTickers || []).filter((t) => {
+    return t !== "SPY" && Array.isArray(appState.priceCache[t]) === true && appState.priceCache[t].length >= 500;
+  });
+  const minBreadth = appState.settings.minimumBreadth || 5;
+  if (eligibleConstituents.length < minBreadth) {
+    showStage9Alert(`Fewer than minimum breadth (${minBreadth}) constituents have at least 500 sessions (${eligibleConstituents.length} eligible).`, "error");
+    return;
+  }
+
+  clearStage9Alert();
+  setStageStatus(9, "running");
+
+  const runBtn = document.getElementById("btn-run-backtest");
+  if (runBtn !== null) {
+    runBtn.classList.add("hidden");
+  }
+  const cancelBtn = document.getElementById("btn-cancel-backtest");
+  if (cancelBtn !== null) {
+    cancelBtn.classList.remove("hidden");
+  }
+  const progressContainer = document.getElementById("backtest-progress-container");
+  if (progressContainer !== null) {
+    progressContainer.classList.remove("hidden");
+  }
+  const fill = document.getElementById("backtest-progress-fill");
+  if (fill !== null) {
+    fill.style.width = "0%";
+  }
+  const pText = document.getElementById("backtest-progress-text");
+  if (pText !== null) {
+    pText.textContent = "0% (evaluating entry dates...)";
+  }
+
+  try {
+    backtestWorkerInstance = new Worker(new URL("./backtestWorker.js", import.meta.url), { type: "module" });
+  } catch (workerErr) {
+    cleanUpBacktestWorker();
+    setStageStatus(9, appState.backtest !== null ? "done" : "idle");
+    showStage9Alert(`Failed to initialize Web Worker: ${workerErr.message || String(workerErr)}`, "error");
+    return;
+  }
+
+  backtestWorkerInstance.onmessage = (event) => {
+    const msg = event.data;
+    if (!msg || typeof msg !== "object") {
+      return;
+    }
+
+    if (msg.type === "PROGRESS") {
+      const fillEl = document.getElementById("backtest-progress-fill");
+      const textEl = document.getElementById("backtest-progress-text");
+      if (fillEl !== null) {
+        fillEl.style.width = `${msg.data.percent}%`;
+      }
+      if (textEl !== null) {
+        textEl.textContent = `${msg.data.percent}% (${msg.data.current}/${msg.data.total} dates)`;
+      }
+    } else if (msg.type === "DONE") {
+      appState.backtest = msg.data;
+      setStageStatus(9, "done");
+      cleanUpBacktestWorker();
+      renderStage8UI();
+      renderStage9UI();
+
+      // Expand stage 9 section
+      const body9 = document.getElementById("stage-body-9");
+      const header9 = document.getElementById("stage-header-9");
+      if (body9 !== null && body9.classList.contains("collapsed") === true) {
+        body9.classList.remove("collapsed");
+        if (header9 !== null) {
+          header9.setAttribute("aria-expanded", "true");
+        }
+      }
+    } else if (msg.type === "ERROR") {
+      cleanUpBacktestWorker();
+      setStageStatus(9, appState.backtest !== null ? "done" : "idle");
+      showStage9Alert(`Backtest simulation failed: ${msg.error}`, "error");
+    }
+  };
+
+  backtestWorkerInstance.onerror = (err) => {
+    cleanUpBacktestWorker();
+    setStageStatus(9, appState.backtest !== null ? "done" : "idle");
+    showStage9Alert(`Worker execution error: ${err.message || String(err)}`, "error");
+  };
+
+  backtestWorkerInstance.postMessage({
+    type: "RUN_BACKTEST",
+    data: {
+      priceCache: appState.priceCache,
+      selectedTickers: appState.selectedTickers,
+      universe: appState.universe,
+      settings: {
+        rsiThreshold: appState.settings.rsiThreshold,
+        histogramLookback: appState.settings.histogramLookback,
+        weightCap: appState.settings.weightCap,
+        minimumBreadth: appState.settings.minimumBreadth,
+        holdingPeriod: appState.settings.holdingPeriod || 20,
+        exitThreshold: appState.settings.exitThreshold || 60,
+        cadence: appState.settings.cadence || 5
+      }
+    }
+  });
+}
+
+/**
+ * Renders the Stage 9 Walk-Forward Backtest user interface.
+ */
+export function renderStage9UI() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  // Synchronize pre-flight conditions on Run button
+  const runBtn = document.getElementById("btn-run-backtest");
+  const isStage2Done = appState.stageStatus[2] === "done";
+  const spySeries = appState.priceCache["SPY"] || [];
+  const isSpySufficient = Array.isArray(spySeries) === true && spySeries.length >= 500;
+
+  if (runBtn !== null) {
+    if (isStage2Done === false) {
+      runBtn.disabled = true;
+      runBtn.title = "Stage 2 price alignment must complete before running backtest.";
+    } else if (isSpySufficient === false) {
+      runBtn.disabled = true;
+      runBtn.title = `SPY has ${spySeries.length} sessions (minimum 500 required for backtest benchmark).`;
+    } else {
+      runBtn.disabled = false;
+      runBtn.title = "Run walk-forward backtest simulation";
+    }
+  }
+
+  const placeholder = document.getElementById("stage-9-placeholder");
+  const container = document.getElementById("stage-9-container");
+
+  const hasBacktest = appState.backtest !== null && typeof appState.backtest === "object";
+  if (hasBacktest === false) {
+    if (placeholder !== null) {
+      placeholder.classList.remove("hidden");
+    }
+    if (container !== null) {
+      container.classList.add("hidden");
+    }
+    return;
+  }
+
+  if (placeholder !== null) {
+    placeholder.classList.add("hidden");
+  }
+  if (container !== null) {
+    container.classList.remove("hidden");
+  }
+
+  const bt = appState.backtest;
+
+  // 1. Verdict card
+  const verdictBadge = document.getElementById("stage-9-verdict-badge");
+  const verdictDesc = document.getElementById("stage-9-verdict-desc");
+  if (verdictBadge !== null) {
+    const isSup = bt.isSupported === true;
+    verdictBadge.textContent = isSup === true ? "supported" : "not supported";
+    verdictBadge.className = `badge ${isSup === true ? "badge-status-pass" : "badge-status-fail"}`;
+  }
+  if (verdictDesc !== null) {
+    verdictDesc.textContent = bt.verdictExplanation || "";
+  }
+
+  // 2. Parameters card
+  const paramH = document.getElementById("stage-9-param-h");
+  if (paramH !== null) {
+    paramH.textContent = `${bt.settings.holdingPeriod} sessions`;
+  }
+  const paramExit = document.getElementById("stage-9-param-exit");
+  if (paramExit !== null) {
+    paramExit.textContent = `${bt.settings.exitThreshold} RSI`;
+  }
+  const paramCadence = document.getElementById("stage-9-param-cadence");
+  if (paramCadence !== null) {
+    paramCadence.textContent = `${bt.settings.cadence} sessions`;
+  }
+  const paramWindow = document.getElementById("stage-9-param-window");
+  if (paramWindow !== null) {
+    const w = bt.window || bt.lookbackWindow || {};
+    paramWindow.textContent = `${w.startDate || "--"} → ${w.endDate || "--"}`;
+  }
+  const paramSessions = document.getElementById("stage-9-param-sessions");
+  if (paramSessions !== null) {
+    const w = bt.window || bt.lookbackWindow || {};
+    paramSessions.textContent = `${w.sessionCount || 0} sessions`;
+  }
+  const paramConstraining = document.getElementById("stage-9-param-constraining");
+  if (paramConstraining !== null) {
+    const c = bt.constrainingTickers || (bt.window && bt.window.constrainingTickers) || {};
+    const startStr = Array.isArray(c.start) && c.start.length > 0 ? c.start.join(", ") : "None";
+    const endStr = Array.isArray(c.end) && c.end.length > 0 ? c.end.join(", ") : "None";
+    paramConstraining.textContent = `Start: ${startStr} | End: ${endStr}`;
+  }
+
+  // 3. Execution counts
+  const countEval = document.getElementById("stage-9-count-evaluated");
+  if (countEval !== null) {
+    countEval.textContent = String(bt.counts.entryDatesCount || bt.counts.evaluatedEntryDates || 0);
+  }
+  const countNonOver = document.getElementById("stage-9-count-nonoverlapping");
+  if (countNonOver !== null) {
+    countNonOver.textContent = String(bt.counts.nonOverlappingCount || bt.counts.nonOverlappingEntryDates || 0);
+  }
+  const countTraded = document.getElementById("stage-9-count-traded");
+  if (countTraded !== null) {
+    countTraded.textContent = String(bt.counts.tradedDatesCount || bt.counts.tradedDates || 0);
+  }
+  const countNoTrade = document.getElementById("stage-9-count-notrade");
+  if (countNoTrade !== null) {
+    countNoTrade.textContent = String(bt.counts.noTradeDatesCount || bt.counts.noTradeDates || 0);
+  }
+
+  // 4. Attribution
+  const attr = bt.attributions || bt.attribution || {};
+  const screenMean = document.getElementById("stage-9-screen-mean");
+  if (screenMean !== null && attr.screenEffect) {
+    screenMean.textContent = formatSignedPercent(attr.screenEffect.mean);
+  }
+  const screenHit = document.getElementById("stage-9-screen-hitrate");
+  if (screenHit !== null && attr.screenEffect) {
+    screenHit.textContent = formatPercentage(attr.screenEffect.hitRate);
+  }
+  const optMean = document.getElementById("stage-9-optimizer-mean");
+  if (optMean !== null && attr.optimizerEffect) {
+    optMean.textContent = formatSignedPercent(attr.optimizerEffect.mean);
+  }
+  const optHit = document.getElementById("stage-9-optimizer-hitrate");
+  if (optHit !== null && attr.optimizerEffect) {
+    optHit.textContent = formatPercentage(attr.optimizerEffect.hitRate);
+  }
+
+  // 5. Summary Table
+  const summaryTbody = document.getElementById("stage-9-summary-tbody");
+  if (summaryTbody !== null && bt.summary) {
+    const rows = [
+      { key: "minVariance", label: "Minimum variance", badge: '<span class="badge-candidate">Candidate</span>' },
+      { key: "equalWeight", label: "Equal weight", badge: '<span class="badge-reference">Reference</span>' },
+      { key: "inverseVolatility", label: "Inverse volatility", badge: '<span class="badge-reference">Reference</span>' },
+      { key: "spy", label: "SPY", badge: '<span class="badge-not-candidate">Benchmark</span>' },
+      { key: "unscreened", label: "Unscreened basket", badge: '<span class="badge-not-candidate">Not a candidate</span>' }
+    ];
+
+    summaryTbody.innerHTML = rows.map((r) => {
+      const item = bt.summary[r.key] || {};
+      const hitStr = item.hitRateVsSpy !== null && item.hitRateVsSpy !== undefined
+        ? formatPercentage(item.hitRateVsSpy)
+        : "—";
+      return `
+        <tr id="stage-9-summary-row-${r.key}">
+          <td>
+            <div style="font-weight: 600; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+              ${escapeHtml(r.label)}
+              ${r.badge}
+            </div>
+          </td>
+          <td>${item.tradeCount || 0}</td>
+          <td>${formatSignedPercent(item.meanForwardReturn)}</td>
+          <td>${formatSignedPercent(item.medianForwardReturn)}</td>
+          <td>${hitStr}</td>
+          <td>${formatSignedPercent(item.worstForwardReturn)}</td>
+          <td>${formatSignedPercent(item.meanMaxDrawdown)}</td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  // 6. Trades Table
+  const tradesBadge = document.getElementById("stage-9-trades-count-badge");
+  const tradesTbody = document.getElementById("stage-9-trades-tbody");
+  const tradesList = bt.trades || bt.tradesTable || [];
+
+  if (tradesBadge !== null) {
+    tradesBadge.textContent = `${tradesList.length} dates (${bt.counts.tradedDatesCount || 0} traded)`;
+  }
+
+  if (tradesTbody !== null) {
+    tradesTbody.innerHTML = tradesList.map((t, idx) => {
+      const statusBadge = t.isTraded === true
+        ? '<span class="badge badge-status-pass">Traded</span>'
+        : '<span class="badge badge-status-fail">No Trade</span>';
+
+      const survivorsStr = t.survivorsCount > 0
+        ? `${t.survivorsCount} (${escapeHtml((t.survivors || []).join(", "))})`
+        : "0";
+
+      let exitSummary = "—";
+      if (t.isTraded === true && t.exits) {
+        const exitItems = Object.entries(t.exits).map(([sym, ex]) => {
+          return `${sym}: +${ex.exitOffset}d (${ex.exitDate})`;
+        });
+        exitSummary = escapeHtml(exitItems.join("; "));
+      }
+
+      const mvRet = t.isTraded === true && t.forwardReturns && t.forwardReturns.minVariance !== null
+        ? formatSignedPercent(t.forwardReturns.minVariance)
+        : "—";
+
+      const ewRet = t.isTraded === true && t.forwardReturns && t.forwardReturns.equalWeight !== null
+        ? formatSignedPercent(t.forwardReturns.equalWeight)
+        : "—";
+
+      const spyRet = t.forwardReturns && t.forwardReturns.spy !== null
+        ? formatSignedPercent(t.forwardReturns.spy)
+        : "—";
+
+      const reasonDesc = t.reason || "Traded to exit threshold or holding limit";
+
+      return `
+        <tr id="stage-9-trade-row-${idx}">
+          <td style="font-weight: 600;">${escapeHtml(t.date)}</td>
+          <td>${statusBadge}</td>
+          <td>${survivorsStr}</td>
+          <td style="font-size: 11px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${exitSummary}">
+            ${exitSummary}
+          </td>
+          <td>${mvRet}</td>
+          <td>${ewRet}</td>
+          <td>${spyRet}</td>
+          <td style="font-size: 11.5px; color: #64748b;">${escapeHtml(reasonDesc)}</td>
+        </tr>
+      `;
+    }).join("");
+  }
+}
+
+/**
+ * Wires up Stage 9 interactive controls.
+ */
+export function setupStage9() {
+  renderStage9UI();
+
+  const runBtn = document.getElementById("btn-run-backtest");
+  if (runBtn !== null) {
+    runBtn.onclick = () => {
+      startBacktest();
+    };
+  }
+
+  const cancelBtn = document.getElementById("btn-cancel-backtest");
+  if (cancelBtn !== null) {
+    cancelBtn.onclick = () => {
+      cancelBacktest();
+    };
+  }
+}
+
 
 
 // Attach helpers and state to window for testing and subsequent prompts
@@ -12006,6 +12816,13 @@ if (typeof globalThis !== "undefined") {
   globalThis.normalizeNumberToken = normalizeNumberToken;
   globalThis.generateNote = generateNote;
   globalThis.regenerateNote = regenerateNote;
+  globalThis.formatSignedPercent = formatSignedPercent;
+  globalThis.showStage9Alert = showStage9Alert;
+  globalThis.clearStage9Alert = clearStage9Alert;
+  globalThis.startBacktest = startBacktest;
+  globalThis.cancelBacktest = cancelBacktest;
+  globalThis.renderStage9UI = renderStage9UI;
+  globalThis.setupStage9 = setupStage9;
 }
 
 export { appState as state };
@@ -12023,6 +12840,7 @@ function initializeApp() {
   setupStage6();
   setupStage7();
   setupStage8();
+  setupStage9();
 }
 
 const hasDocument = typeof document !== "undefined";
