@@ -2,6 +2,57 @@
 
 export const ALLOWED_STATUSES = ["idle", "running", "done", "stale", "blocked"];
 
+export const GICS_SECTORS = [
+  "Information Technology",
+  "Communication Services",
+  "Consumer Discretionary",
+  "Consumer Staples",
+  "Health Care",
+  "Financials",
+  "Industrials",
+  "Energy",
+  "Utilities",
+  "Materials",
+  "Real Estate"
+];
+
+export const DEFAULT_UNIVERSE = [
+  { sector: "Information Technology", ticker: "AAPL" },
+  { sector: "Information Technology", ticker: "MSFT" },
+  { sector: "Information Technology", ticker: "NVDA" },
+  { sector: "Communication Services", ticker: "GOOGL" },
+  { sector: "Communication Services", ticker: "META" },
+  { sector: "Communication Services", ticker: "NFLX" },
+  { sector: "Consumer Discretionary", ticker: "AMZN" },
+  { sector: "Consumer Discretionary", ticker: "HD" },
+  { sector: "Consumer Discretionary", ticker: "NKE" },
+  { sector: "Consumer Staples", ticker: "PG" },
+  { sector: "Consumer Staples", ticker: "KO" },
+  { sector: "Consumer Staples", ticker: "COST" },
+  { sector: "Health Care", ticker: "JNJ" },
+  { sector: "Health Care", ticker: "UNH" },
+  { sector: "Health Care", ticker: "PFE" },
+  { sector: "Financials", ticker: "JPM" },
+  { sector: "Financials", ticker: "GS" },
+  { sector: "Financials", ticker: "BLK" },
+  { sector: "Industrials", ticker: "CAT" },
+  { sector: "Industrials", ticker: "HON" },
+  { sector: "Industrials", ticker: "UNP" },
+  { sector: "Energy", ticker: "XOM" },
+  { sector: "Energy", ticker: "CVX" },
+  { sector: "Energy", ticker: "COP" },
+  { sector: "Utilities", ticker: "NEE" },
+  { sector: "Utilities", ticker: "DUK" },
+  { sector: "Utilities", ticker: "SO" },
+  { sector: "Materials", ticker: "LIN" },
+  { sector: "Materials", ticker: "SHW" },
+  { sector: "Materials", ticker: "NUE" },
+  { sector: "Real Estate", ticker: "PLD" },
+  { sector: "Real Estate", ticker: "AMT" },
+  { sector: "Real Estate", ticker: "EQIX" },
+  { sector: "Benchmark", ticker: "SPY" }
+];
+
 export const STAGES = [
   { id: 1, name: "Universe and settings", shortName: "Universe" },
   { id: 2, name: "Price history", shortName: "Price history" },
@@ -53,6 +104,20 @@ export const appState = {
     8: "idle"
   }
 };
+
+/**
+ * Initializes the default universe and selects all 33 constituents.
+ * SPY is never placed into selectedTickers.
+ */
+export function initDefaultUniverse() {
+  appState.universe = DEFAULT_UNIVERSE.map((row) => ({ sector: row.sector, ticker: row.ticker }));
+  appState.selectedTickers = DEFAULT_UNIVERSE
+    .filter((row) => row.sector !== "Benchmark" && row.ticker !== "SPY")
+    .map((row) => row.ticker);
+}
+
+// Pre-load default universe on module start
+initDefaultUniverse();
 
 /**
  * Updates the status of a specific stage.
@@ -386,6 +451,474 @@ export function clearGlobalBanners() {
   }
 }
 
+/**
+ * Parses and validates CSV content for the 33-constituent universe + SPY benchmark.
+ * Enforces validation rules in strict sequential order and stops at the first failure.
+ *
+ * Rules:
+ * 1. Header row must be exactly Sector,Ticker.
+ * 2. Exactly 33 constituent rows.
+ * 3. Exactly one SPY row whose sector is the exact string Benchmark.
+ * 4. Every constituent sector must be one of the 11 names in GICS_SECTORS spelled exactly.
+ * 5. Each of the 11 sectors must have exactly three tickers.
+ * 6. No duplicate ticker anywhere in the file.
+ *
+ * @param {string} csvText - Raw text from uploaded CSV file
+ * @returns {{ success: boolean, data?: Array<{sector: string, ticker: string}>, error?: string }}
+ */
+export function parseUniverseCSV(csvText) {
+  const isString = typeof csvText === "string";
+  if (isString === false) {
+    return {
+      success: false,
+      error: "Invalid file content. Expected a text CSV file."
+    };
+  }
+
+  // 1. Strip leading byte-order mark (BOM)
+  const cleanText = csvText.replace(/^\uFEFF/, "");
+
+  // 2. Accept both LF and CRLF line endings (and bare CR)
+  const rawLines = cleanText.split(/\r\n|\n|\r/);
+
+  // 3. Ignore trailing blank lines
+  const lines = [...rawLines];
+  while (lines.length > 0) {
+    const lastIndex = lines.length - 1;
+    const isBlank = lines[lastIndex].trim() === "";
+    if (isBlank === true) {
+      lines.pop();
+    } else {
+      break;
+    }
+  }
+
+  // Rule 1: Header row must be exactly Sector,Ticker
+  const hasLines = lines.length > 0;
+  if (hasLines === false) {
+    return {
+      success: false,
+      error: "Header rule broken: header row must be exactly Sector,Ticker."
+    };
+  }
+
+  const headerCells = lines[0].split(",").map((c) => c.trim());
+  const headerLenValid = headerCells.length === 2;
+  const headerSectorValid = headerLenValid === true && headerCells[0] === "Sector";
+  const headerTickerValid = headerLenValid === true && headerCells[1] === "Ticker";
+  const headerIsValid = headerSectorValid === true && headerTickerValid === true;
+  if (headerIsValid === false) {
+    return {
+      success: false,
+      error: "Header rule broken: header row must be exactly Sector,Ticker."
+    };
+  }
+
+  // Parse constituent and benchmark rows
+  const dataLines = lines.slice(1);
+  const parsedRows = [];
+
+  for (let i = 0; i < dataLines.length; i += 1) {
+    const rawLine = dataLines[i];
+    const isLineBlank = rawLine.trim() === "";
+    if (isLineBlank === true) {
+      return {
+        success: false,
+        error: `Row format broken at line ${i + 2}: empty line encountered in data.`
+      };
+    }
+
+    const cells = rawLine.split(",").map((c) => c.trim());
+    const cellCountValid = cells.length === 2;
+    if (cellCountValid === false) {
+      return {
+        success: false,
+        error: `Row format broken at line ${i + 2}: expected exactly 2 comma-separated values (Sector,Ticker).`
+      };
+    }
+
+    const sector = cells[0];
+    const ticker = cells[1].toUpperCase();
+    const tickerEmpty = ticker.length === 0;
+    if (tickerEmpty === true) {
+      return {
+        success: false,
+        error: `Ticker format broken at line ${i + 2}: ticker is empty.`
+      };
+    }
+
+    parsedRows.push({ sector, ticker });
+  }
+
+  // Separate constituents and benchmark (SPY)
+  const constituentRows = [];
+  const benchmarkRows = [];
+
+  for (let i = 0; i < parsedRows.length; i += 1) {
+    const row = parsedRows[i];
+    const isBenchmarkSector = row.sector === "Benchmark";
+    const isSpyTicker = row.ticker === "SPY";
+    const isBenchmarkOrSpy = isBenchmarkSector === true || isSpyTicker === true;
+    if (isBenchmarkOrSpy === true) {
+      benchmarkRows.push(row);
+    } else {
+      constituentRows.push(row);
+    }
+  }
+
+  // Rule 2: Exactly 33 constituent rows
+  const constituentCountValid = constituentRows.length === 33;
+  if (constituentCountValid === false) {
+    return {
+      success: false,
+      error: `Constituent count rule broken: exactly 33 constituent rows required (found ${constituentRows.length}).`
+    };
+  }
+
+  // Rule 3: Exactly one SPY row whose sector is the exact string Benchmark
+  const benchmarkCountValid = benchmarkRows.length === 1;
+  const singleBenchmark = benchmarkCountValid === true ? benchmarkRows[0] : null;
+  const benchmarkSectorValid = singleBenchmark !== null && singleBenchmark.sector === "Benchmark";
+  const benchmarkTickerValid = singleBenchmark !== null && singleBenchmark.ticker === "SPY";
+  const benchmarkRowValid = benchmarkCountValid === true && benchmarkSectorValid === true && benchmarkTickerValid === true;
+  if (benchmarkRowValid === false) {
+    return {
+      success: false,
+      error: "Benchmark rule broken: exactly one SPY row whose sector is the exact string Benchmark required."
+    };
+  }
+
+  // Rule 4: Every constituent sector must be one of the 11 names in GICS_SECTORS spelled exactly
+  for (let c = 0; c < constituentRows.length; c += 1) {
+    const row = constituentRows[c];
+    const sectorIsGics = GICS_SECTORS.includes(row.sector);
+    if (sectorIsGics === false) {
+      return {
+        success: false,
+        error: `Sector validity rule broken: every constituent sector must be one of the 11 names in GICS_SECTORS spelled exactly (invalid sector: "${row.sector}").`
+      };
+    }
+  }
+
+  // Rule 5: Each of the 11 sectors must have exactly three tickers
+  const sectorTally = {};
+  for (let s = 0; s < GICS_SECTORS.length; s += 1) {
+    sectorTally[GICS_SECTORS[s]] = 0;
+  }
+  for (let c = 0; c < constituentRows.length; c += 1) {
+    const row = constituentRows[c];
+    sectorTally[row.sector] += 1;
+  }
+  for (let s = 0; s < GICS_SECTORS.length; s += 1) {
+    const sectorName = GICS_SECTORS[s];
+    const count = sectorTally[sectorName];
+    const countIsThree = count === 3;
+    if (countIsThree === false) {
+      return {
+        success: false,
+        error: `Sector balance rule broken: each of the 11 sectors must have exactly three tickers (sector "${sectorName}" has ${count}).`
+      };
+    }
+  }
+
+  // Rule 6: No duplicate ticker anywhere in the file
+  const seenTickers = new Set();
+  const allRows = [...constituentRows, ...benchmarkRows];
+  for (let a = 0; a < allRows.length; a += 1) {
+    const ticker = allRows[a].ticker;
+    const isDuplicate = seenTickers.has(ticker);
+    if (isDuplicate === true) {
+      return {
+        success: false,
+        error: `Duplicate ticker rule broken: no duplicate ticker anywhere in the file (duplicate found: "${ticker}").`
+      };
+    }
+    seenTickers.add(ticker);
+  }
+
+  return {
+    success: true,
+    data: allRows
+  };
+}
+
+/**
+ * Applies uploaded CSV text to the application state if valid.
+ * Replaces universe, updates selectedTickers, clears labels/rawLabelResponse,
+ * cleans priceCache of removed tickers, and resets all stages to idle.
+ * On failure, leaves all state unchanged and displays the error message.
+ *
+ * @param {string} csvText - Raw CSV text
+ * @returns {{ success: boolean, error?: string }}
+ */
+export function applyUniverseCSV(csvText) {
+  const result = parseUniverseCSV(csvText);
+  const isValid = result.success === true;
+  if (isValid === true) {
+    const parsedRows = result.data;
+    appState.universe = parsedRows.map((r) => ({ sector: r.sector, ticker: r.ticker }));
+    appState.selectedTickers = parsedRows
+      .filter((r) => r.sector !== "Benchmark" && r.ticker !== "SPY")
+      .map((r) => r.ticker);
+    appState.labels = null;
+    appState.rawLabelResponse = null;
+
+    // Remove from priceCache every ticker no longer in the list
+    const newTickersSet = new Set(parsedRows.map((r) => r.ticker));
+    const hasPriceCache = appState.priceCache !== null && typeof appState.priceCache === "object";
+    if (hasPriceCache === true) {
+      const cachedKeys = Object.keys(appState.priceCache);
+      for (let k = 0; k < cachedKeys.length; k += 1) {
+        const cachedTicker = cachedKeys[k];
+        const isStillInUniverse = newTickersSet.has(cachedTicker);
+        if (isStillInUniverse === false) {
+          delete appState.priceCache[cachedTicker];
+        }
+      }
+    }
+
+    // Set all eight stages to "idle"
+    for (let s = 1; s <= 8; s += 1) {
+      setStageStatus(s, "idle");
+    }
+
+    renderUniverseUI();
+    showUniverseMessage("Universe updated successfully. 33 constituents and SPY benchmark loaded.", "success");
+    return { success: true };
+  } else {
+    // Leave state.universe, selectedTickers, priceCache, and stage statuses unchanged
+    showUniverseMessage(result.error, "error");
+    return { success: false, error: result.error };
+  }
+}
+
+/**
+ * Displays a validation error or status message next to the file input.
+ *
+ * @param {string} message - Message text
+ * @param {string} type - "error", "success", or "info"
+ */
+export function showUniverseMessage(message, type = "info") {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const messageBox = document.getElementById("universe-upload-message");
+  const hasMessageBox = messageBox !== null;
+  if (hasMessageBox === true) {
+    messageBox.className = `universe-upload-message message-${type}`;
+    messageBox.textContent = message;
+    messageBox.classList.remove("hidden");
+  } else {
+    // Message container not present in DOM
+  }
+}
+
+/**
+ * Downloads a sample balanced universe CSV template.
+ */
+export function downloadUniverseTemplate() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const lines = ["Sector,Ticker"];
+  DEFAULT_UNIVERSE.forEach((row) => {
+    lines.push(`${row.sector},${row.ticker}`);
+  });
+  const csvContent = lines.join("\r\n");
+
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", "universe_template.csv");
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Resets universe back to the DEFAULT_UNIVERSE constant.
+ */
+export function resetToDefaultUniverse() {
+  appState.universe = DEFAULT_UNIVERSE.map((row) => ({ sector: row.sector, ticker: row.ticker }));
+  appState.selectedTickers = DEFAULT_UNIVERSE
+    .filter((row) => row.sector !== "Benchmark" && row.ticker !== "SPY")
+    .map((row) => row.ticker);
+  appState.labels = null;
+  appState.rawLabelResponse = null;
+
+  const defaultTickersSet = new Set(DEFAULT_UNIVERSE.map((r) => r.ticker));
+  const hasPriceCache = appState.priceCache !== null && typeof appState.priceCache === "object";
+  if (hasPriceCache === true) {
+    const cachedKeys = Object.keys(appState.priceCache);
+    for (let k = 0; k < cachedKeys.length; k += 1) {
+      const cachedTicker = cachedKeys[k];
+      const isStillInUniverse = defaultTickersSet.has(cachedTicker);
+      if (isStillInUniverse === false) {
+        delete appState.priceCache[cachedTicker];
+      }
+    }
+  }
+
+  for (let s = 1; s <= 8; s += 1) {
+    setStageStatus(s, "idle");
+  }
+
+  renderUniverseUI();
+  showUniverseMessage("Reset to default 33-constituent universe and SPY benchmark.", "info");
+}
+
+/**
+ * Renders the sector cards and tickers inside Stage 1.
+ */
+export function renderUniverseUI() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const gridContainer = document.getElementById("universe-sectors-grid");
+  const hasGridContainer = gridContainer !== null;
+  if (hasGridContainer === false) {
+    return;
+  }
+
+  // Update summary stats
+  const constituentsVal = document.getElementById("stat-constituents-count");
+  const hasConstituentsVal = constituentsVal !== null;
+  if (hasConstituentsVal === true) {
+    const count = appState.selectedTickers ? appState.selectedTickers.length : 0;
+    constituentsVal.textContent = `${count} / 33 selected`;
+  }
+
+  gridContainer.innerHTML = "";
+
+  const universe = appState.universe || [];
+
+  GICS_SECTORS.forEach((sectorName) => {
+    const sectorRows = universe.filter((row) => row.sector === sectorName);
+
+    const card = document.createElement("div");
+    card.className = "sector-card";
+    const slug = sectorName.toLowerCase().replace(/\s+/g, "-");
+    card.id = `sector-card-${slug}`;
+
+    const tickersHtml = sectorRows
+      .map((row) => `<span class="ticker-chip" id="chip-${row.ticker.toLowerCase()}">${row.ticker}</span>`)
+      .join("");
+
+    card.innerHTML = `
+      <div class="sector-card-header">
+        <span class="sector-name">${sectorName}</span>
+        <span class="sector-badge-count">${sectorRows.length} tickers</span>
+      </div>
+      <div class="sector-tickers-list">
+        ${tickersHtml}
+      </div>
+    `;
+
+    gridContainer.appendChild(card);
+  });
+}
+
+/**
+ * Sets up CSV file upload, drag-and-drop, and action button listeners.
+ */
+export function setupUniverseUpload() {
+  const hasDocument = typeof document !== "undefined";
+  if (hasDocument === false) {
+    return;
+  }
+
+  const fileInput = document.getElementById("universe-csv-input");
+  const uploadTrigger = document.getElementById("btn-upload-trigger");
+  const downloadSample = document.getElementById("btn-download-sample");
+  const resetDefault = document.getElementById("btn-reset-default");
+  const dropzone = document.getElementById("universe-dropzone");
+
+  const hasFileInput = fileInput !== null;
+  if (hasFileInput === true) {
+    fileInput.addEventListener("change", (event) => {
+      const files = event.target.files;
+      const hasFiles = files !== null && files.length > 0;
+      if (hasFiles === true) {
+        const file = files[0];
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const content = e.target.result;
+          applyUniverseCSV(content);
+          fileInput.value = "";
+        };
+        reader.readAsText(file);
+      }
+    });
+  }
+
+  const hasUploadTrigger = uploadTrigger !== null && hasFileInput === true;
+  if (hasUploadTrigger === true) {
+    uploadTrigger.addEventListener("click", () => {
+      fileInput.click();
+    });
+  }
+
+  const hasDownloadSample = downloadSample !== null;
+  if (hasDownloadSample === true) {
+    downloadSample.addEventListener("click", () => {
+      downloadUniverseTemplate();
+    });
+  }
+
+  const hasResetDefault = resetDefault !== null;
+  if (hasResetDefault === true) {
+    resetDefault.addEventListener("click", () => {
+      resetToDefaultUniverse();
+    });
+  }
+
+  const hasDropzone = dropzone !== null && hasFileInput === true;
+  if (hasDropzone === true) {
+    dropzone.addEventListener("click", () => {
+      fileInput.click();
+    });
+
+    dropzone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropzone.classList.add("drag-active");
+    });
+
+    dropzone.addEventListener("dragleave", () => {
+      dropzone.classList.remove("drag-active");
+    });
+
+    dropzone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropzone.classList.remove("drag-active");
+      const dt = event.dataTransfer;
+      const hasDropFiles = dt !== null && dt.files !== null && dt.files.length > 0;
+      if (hasDropFiles === true) {
+        const file = dt.files[0];
+        const isCsv = file.name.toLowerCase().endsWith(".csv");
+        if (isCsv === false) {
+          showUniverseMessage("Invalid file format. Please upload a .csv file.", "error");
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const content = e.target.result;
+          applyUniverseCSV(content);
+          fileInput.value = "";
+        };
+        reader.readAsText(file);
+      }
+    });
+  }
+}
+
 // Attach helpers and state to window for testing and subsequent prompts
 const hasWindow = typeof window !== "undefined";
 if (hasWindow === true) {
@@ -397,11 +930,23 @@ if (hasWindow === true) {
   window.clearGlobalBanners = clearGlobalBanners;
   window.STAGES = STAGES;
   window.ALLOWED_STATUSES = ALLOWED_STATUSES;
+  window.GICS_SECTORS = GICS_SECTORS;
+  window.DEFAULT_UNIVERSE = DEFAULT_UNIVERSE;
+  window.initDefaultUniverse = initDefaultUniverse;
+  window.parseUniverseCSV = parseUniverseCSV;
+  window.applyUniverseCSV = applyUniverseCSV;
+  window.showUniverseMessage = showUniverseMessage;
+  window.downloadUniverseTemplate = downloadUniverseTemplate;
+  window.resetToDefaultUniverse = resetToDefaultUniverse;
+  window.renderUniverseUI = renderUniverseUI;
+  window.setupUniverseUpload = setupUniverseUpload;
 }
 
 function initializeApp() {
   renderStageTracker();
   setupCollapsibleSections();
+  setupUniverseUpload();
+  renderUniverseUI();
 }
 
 const hasDocument = typeof document !== "undefined";

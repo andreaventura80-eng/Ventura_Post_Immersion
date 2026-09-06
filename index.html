@@ -70,8 +70,84 @@
       </div>
       <div class="stage-body" id="stage-body-1">
         <div class="stage-content" id="stage-content-1">
-          <div class="stage-placeholder">
-            <p class="placeholder-text">Stage 1: Universe and settings controls will be rendered here.</p>
+          <!-- Universe Upload Panel -->
+          <div class="universe-upload-panel" id="universe-upload-panel">
+            <div class="upload-panel-header">
+              <div>
+                <h3 class="upload-panel-title">Fixed Equity Universe</h3>
+                <p class="upload-panel-desc">Fixed 33-constituent universe (3 per GICS sector) plus SPY benchmark. Upload a CSV to replace the default set.</p>
+              </div>
+              <div class="upload-actions-group">
+                <input type="file" id="universe-csv-input" accept=".csv" class="hidden-file-input" />
+                <button type="button" class="btn-apple btn-primary" id="btn-upload-trigger">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                  </svg>
+                  Upload CSV
+                </button>
+                <button type="button" class="btn-apple btn-secondary" id="btn-download-sample">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                  Template CSV
+                </button>
+                <button type="button" class="btn-apple btn-secondary" id="btn-reset-default">
+                  Reset Default
+                </button>
+              </div>
+            </div>
+
+            <!-- Drag and Drop Dropzone -->
+            <div class="universe-dropzone" id="universe-dropzone" role="region" aria-label="CSV file drop zone">
+              <svg class="dropzone-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="12" y1="18" x2="12" y2="12"></line>
+                <line x1="9" y1="15" x2="12" y2="12"></line>
+                <line x1="15" y1="15" x2="12" y2="12"></line>
+              </svg>
+              <div class="dropzone-text">
+                <span class="dropzone-prompt">Drop a valid 35-line CSV here, or click "Upload CSV"</span>
+                <span class="dropzone-hint">Required format: Sector,Ticker (33 constituents across 11 GICS sectors + 1 Benchmark SPY)</span>
+              </div>
+            </div>
+
+            <!-- Upload Message / Validation Error Banner -->
+            <div class="universe-upload-message hidden" id="universe-upload-message" role="status"></div>
+          </div>
+
+          <!-- Universe Summary Meta -->
+          <div class="universe-summary-bar" id="universe-summary-bar">
+            <div class="summary-stat-pill" id="stat-pill-constituents">
+              <span class="stat-pill-label">Constituents:</span>
+              <span class="stat-pill-val" id="stat-constituents-count">33 / 33 selected</span>
+            </div>
+            <div class="summary-stat-pill" id="stat-pill-sectors">
+              <span class="stat-pill-label">GICS Sectors:</span>
+              <span class="stat-pill-val" id="stat-sectors-count">11 balanced (3 per sector)</span>
+            </div>
+            <div class="summary-stat-pill" id="stat-pill-benchmark">
+              <span class="stat-pill-label">Benchmark:</span>
+              <span class="stat-pill-val stat-pill-accent" id="stat-benchmark-val">SPY (Diagnostic only)</span>
+            </div>
+          </div>
+
+          <!-- Benchmark Card -->
+          <div class="universe-benchmark-banner" id="universe-benchmark-banner">
+            <div class="benchmark-badge-group">
+              <span class="benchmark-tag">Benchmark</span>
+              <span class="benchmark-ticker">SPY</span>
+            </div>
+            <span class="benchmark-desc">SPDR S&P 500 ETF Trust. SPY is never a portfolio candidate. It is used exclusively for the rolling beta diagnostic.</span>
+          </div>
+
+          <!-- 11 Sectors Grid -->
+          <div class="universe-grid" id="universe-sectors-grid">
+            <!-- Populated dynamically by renderUniverseUI() -->
           </div>
         </div>
       </div>

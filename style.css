@@ -433,6 +433,317 @@ body {
   font-size: 14px;
 }
 
+/* Stage 1: Universe Styles */
+.hidden-file-input {
+  display: none !important;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.universe-upload-panel {
+  background: #ffffff;
+  border: 1px solid var(--apple-border);
+  border-radius: 14px;
+  padding: 1.25rem 1.4rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.02);
+}
+
+.upload-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.upload-panel-title {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--apple-text-primary);
+  letter-spacing: -0.01em;
+}
+
+.upload-panel-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--apple-text-secondary);
+  line-height: 1.4;
+}
+
+.upload-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn-apple {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0.45rem 0.9rem;
+  font-size: 12.5px;
+  font-weight: 500;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-apple:focus-visible {
+  outline: 2px solid var(--apple-blue);
+  outline-offset: 2px;
+}
+
+.btn-apple.btn-primary {
+  background: var(--apple-blue);
+  color: #ffffff;
+  border: 1px solid var(--apple-blue);
+}
+
+.btn-apple.btn-primary:hover {
+  background: var(--apple-blue-hover);
+  border-color: var(--apple-blue-hover);
+}
+
+.btn-apple.btn-secondary {
+  background: #ffffff;
+  color: var(--apple-text-primary);
+  border: 1px solid var(--apple-border);
+}
+
+.btn-apple.btn-secondary:hover {
+  background: #f7f7f8;
+  border-color: rgba(0, 0, 0, 0.18);
+}
+
+.universe-dropzone {
+  margin-top: 1rem;
+  padding: 1.25rem 1rem;
+  border: 2px dashed var(--apple-border-input);
+  border-radius: 12px;
+  background: #fafafc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.universe-dropzone:hover {
+  border-color: var(--apple-blue);
+  background: #f4f8fc;
+}
+
+.universe-dropzone.drag-active {
+  border-color: var(--apple-blue);
+  background: #ebf4ff;
+  border-style: solid;
+}
+
+.dropzone-icon {
+  color: var(--apple-text-secondary);
+  flex-shrink: 0;
+}
+
+.dropzone-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+}
+
+.dropzone-prompt {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--apple-text-primary);
+}
+
+.dropzone-hint {
+  font-size: 11.5px;
+  color: var(--apple-text-secondary);
+}
+
+.universe-upload-message {
+  margin-top: 0.85rem;
+  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.universe-upload-message.message-error {
+  background: #fff0f0;
+  color: #c91818;
+  border-color: #fcc2c2;
+}
+
+.universe-upload-message.message-success {
+  background: #eaf8ee;
+  color: #1b8738;
+  border-color: #c2ebd0;
+}
+
+.universe-upload-message.message-info {
+  background: #eef6ff;
+  color: #0056b3;
+  border-color: #bad9ff;
+}
+
+.universe-summary-bar {
+  display: flex;
+  gap: 8px;
+  margin: 1.15rem 0 0.85rem;
+  flex-wrap: wrap;
+}
+
+.summary-stat-pill {
+  background: #ffffff;
+  border: 1px solid var(--apple-border);
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.stat-pill-label {
+  color: var(--apple-text-secondary);
+  font-weight: 500;
+}
+
+.stat-pill-val {
+  color: var(--apple-text-primary);
+  font-weight: 600;
+}
+
+.stat-pill-accent {
+  color: var(--apple-blue);
+}
+
+.universe-benchmark-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #ffffff;
+  border: 1px solid var(--apple-border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.benchmark-badge-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.benchmark-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #636366;
+  color: #ffffff;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+.benchmark-ticker {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--apple-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.benchmark-desc {
+  font-size: 12px;
+  color: var(--apple-text-secondary);
+  line-height: 1.4;
+  flex: 1;
+}
+
+.universe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.sector-card {
+  background: #ffffff;
+  border: 1px solid var(--apple-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.sector-card:hover {
+  border-color: rgba(0, 0, 0, 0.16);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+}
+
+.sector-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sector-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--apple-text-primary);
+  letter-spacing: -0.01em;
+}
+
+.sector-badge-count {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--apple-text-secondary);
+  background: #f1f2f4;
+  padding: 1px 6px;
+  border-radius: 980px;
+}
+
+.sector-tickers-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ticker-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  background: #f1f2f4;
+  color: var(--apple-text-primary);
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid #e5e5ea;
+  letter-spacing: 0.02em;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.ticker-chip:hover {
+  background: #e8eaed;
+  border-color: #d1d1d6;
+}
+
 /* Hero Section */
 .hero-section {
   text-align: center;
